@@ -1,5 +1,5 @@
 # ESP32 firmware for interfacing with a 2016 Prius V
-This is a work in progress
+This is a work in progress, it will use platformIO
 
 ## Notes
 
