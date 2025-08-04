@@ -3,7 +3,7 @@ This is a work in progress, it will use platformIO
 
 ## Notes
 
-things to read:
+Things to read:
 - KW from engine
 - KW in / out from battery
 - Braking mode (regen, mechanical, none)
@@ -22,7 +22,9 @@ things to read:
   - Engine coolant temperature
   - Cylinder tempuratures (?)
 
-things to control:
+Things to control:
 - Windows up/down/position?
 - EV mode toggle
 - Battery fan speed (6 levels)
+
+### Addresses and calculations:
