@@ -1,280 +1,222 @@
+/* Using LVGL with Arduino requires some extra steps...
+ *  
+ * Be sure to read the docs here: https://docs.lvgl.io/master/integration/framework/arduino.html
+ * but note you should use the lv_conf.h from the repo as it is pre-edited to work.
+ * 
+ * You can always edit your own lv_conf.h later and exclude the example options once the build environment is working.
+ * 
+ * Note you MUST move the 'examples' and 'demos' folders into the 'src' folder inside the lvgl library folder 
+ * otherwise this will not compile, please see README.md in the repo.
+ * 
+ */
 #include <Arduino.h>
-#include <SPI.h>
+#include <lvgl.h>
 #include <TFT_eSPI.h>
+#include <examples/lv_examples.h>
+#include <demos/lv_demos.h>
+#include <XPT2046_Touchscreen.h>
 
-// Display object
+// A library for interfacing with the touch screen
+//
+// Can be installed from the library manager (Search for "XPT2046")
+//https://github.com/PaulStoffregen/XPT2046_Touchscreen
+// ----------------------------
+// Touch Screen pins
+// ----------------------------
+
+// The CYD touch uses some non default SPI pins
+#define XPT2046_IRQ 36
+#define XPT2046_MOSI 32
+#define XPT2046_MISO 39
+#define XPT2046_CLK 25
+#define XPT2046_CS 33
+
+SPIClass touchscreenSpi = SPIClass(VSPI);
+XPT2046_Touchscreen touchscreen(XPT2046_CS, XPT2046_IRQ);
+uint16_t touchScreenMinimumX = 200, touchScreenMaximumX = 3700, touchScreenMinimumY = 240, touchScreenMaximumY = 3800;
+
+/*Set to your screen resolution*/
+#define TFT_HOR_RES   320
+#define TFT_VER_RES   240
+
+/*LVGL draw into this buffer, 1/10 screen size usually works well. The size is in bytes*/
+#define DRAW_BUF_SIZE (TFT_HOR_RES * TFT_VER_RES / 10 * (LV_COLOR_DEPTH / 8))
+
+// Initialize TFT_eSPI
 TFT_eSPI tft = TFT_eSPI();
 
-// Touch detection variables
-bool touchEnabled = false;
-unsigned long lastTouch = 0;
+#if LV_USE_LOG != 0
+void my_print( lv_log_level_t level, const char * buf )
+{
+    LV_UNUSED(level);
+    Serial.println(buf);
+    Serial.flush();
+}
+#endif
 
-// Function declarations
-void drawButtons();
-void drawButton(int buttonIndex);
-void handleTouch(uint16_t touchX, uint16_t touchY);
-void onButtonPress(int buttonId);
-void calibrateTouch();
-void scanTouchController();
+/* LVGL calls it when a rendered image needs to copied to the display*/
+void my_disp_flush( lv_display_t *disp, const lv_area_t *area, uint8_t * px_map)
+{
+    uint32_t w = (area->x2 - area->x1 + 1);
+    uint32_t h = (area->y2 - area->y1 + 1);
 
-// Button structure
-struct Button {
-  int x, y, w, h;
-  String label;
-  uint16_t color;
-  uint16_t textColor;
-  bool pressed;
-  int id;
-};
+    tft.startWrite();
+    tft.setAddrWindow(area->x1, area->y1, w, h);
+    tft.pushColors((uint16_t*)px_map, w * h, true);
+    tft.endWrite();
 
-// Define 6 buttons in a 2x3 grid - adjusted for landscape mode
-Button buttons[6] = {
-  {20, 60, 90, 50, "BTN 1", TFT_BLUE, TFT_WHITE, false, 1},
-  {120, 60, 90, 50, "BTN 2", TFT_RED, TFT_WHITE, false, 2},
-  {220, 60, 90, 50, "BTN 3", TFT_GREEN, TFT_BLACK, false, 3},
-  {20, 120, 90, 50, "BTN 4", TFT_YELLOW, TFT_BLACK, false, 4},
-  {120, 120, 90, 50, "BTN 5", TFT_MAGENTA, TFT_WHITE, false, 5},
-  {220, 120, 90, 50, "BTN 6", TFT_CYAN, TFT_BLACK, false, 6}
-};
+    /*Call it to tell LVGL you are ready*/
+    lv_disp_flush_ready(disp);
+}
 
-void setup() {
+/*Read the touchpad*/
+void my_touchpad_read( lv_indev_t * indev, lv_indev_data_t * data )
+{
+  if(touchscreen.touched())
+  {
+    TS_Point p = touchscreen.getPoint();
+    //Some very basic auto calibration so it doesn't go out of range
+    if(p.x < touchScreenMinimumX) touchScreenMinimumX = p.x;
+    if(p.x > touchScreenMaximumX) touchScreenMaximumX = p.x;
+    if(p.y < touchScreenMinimumY) touchScreenMinimumY = p.y;
+    if(p.y > touchScreenMaximumY) touchScreenMaximumY = p.y;
+    //Map this to the pixel position
+    data->point.x = map(p.x,touchScreenMinimumX,touchScreenMaximumX,1,TFT_HOR_RES); /* Touchscreen X calibration */
+    data->point.y = map(p.y,touchScreenMinimumY,touchScreenMaximumY,1,TFT_VER_RES); /* Touchscreen Y calibration */
+    data->state = LV_INDEV_STATE_PRESSED;
+    /*
+    Serial.print("Touch x ");
+    Serial.print(data->point.x);
+    Serial.print(" y ");
+    Serial.println(data->point.y);
+    */
+  }
+  else
+  {
+    data->state = LV_INDEV_STATE_RELEASED;
+  }
+}
+
+lv_indev_t * indev; //Touchscreen input device
+uint8_t* draw_buf;  //draw_buf is allocated on heap otherwise the static area is too big on ESP32 at compile
+uint32_t lastTick = 0;  //Used to track the tick timer
+
+void setup()
+{
+  //Some basic info on the Serial console
+  String LVGL_Arduino = "LVGL demo ";
+  LVGL_Arduino += String('V') + lv_version_major() + "." + lv_version_minor() + "." + lv_version_patch();
   Serial.begin(115200);
-  delay(1000);
-  Serial.println("\n=== Touch Screen Debug ===");
+  Serial.println(LVGL_Arduino);
   
-  // Initialize display
-  tft.init();
-  Serial.println("Display initialized");
-  
-  // Turn on backlight
-  #ifdef TFT_BL
-  pinMode(TFT_BL, OUTPUT);
-  digitalWrite(TFT_BL, HIGH);
-  Serial.println("Backlight turned on");
-  #endif
-  
-  tft.setRotation(1); // Landscape mode
+  //Initialize the display first
+  tft.begin();
+  tft.setRotation(1); // Landscape orientation - try 1, 2, 3 if this doesn't look right
   tft.fillScreen(TFT_BLACK);
-  
-  // Draw title
-  tft.setTextColor(TFT_WHITE, TFT_BLACK);
-  tft.setTextSize(2);
-  tft.drawString("Touch Debug", 10, 10);
-  
-  // Scan for touch controller
-  scanTouchController();
-  
-  // Try to calibrate touch
-  calibrateTouch();
-  
-  // Draw interface
-  tft.fillScreen(TFT_BLACK);
-  tft.setTextColor(TFT_YELLOW, TFT_BLACK);
-  tft.setTextSize(2);
-  tft.drawString("Control Panel", 10, 10);
-  
-  drawButtons();
-  
-  Serial.println("Setup complete - touch test active");
-}
-
-void loop() {
-  uint16_t x, y;
-  
-  // Try multiple touch detection methods
-  bool touched = false;
-  
-  // Method 1: Standard getTouch
-  touched = tft.getTouch(&x, &y);
-  
-  if (!touched) {
-    // Method 2: Try getTouchRaw
-    touched = tft.getTouchRaw(&x, &y);
-    if (touched) {
-      Serial.print("Raw: ");
-    }
-  }
-  
-  if (!touched) {
-    // Method 3: Check touch with different timing
-    delay(1);
-    touched = tft.getTouch(&x, &y);
-  }
-  
-  if (touched && (millis() - lastTouch > 300)) {
-    lastTouch = millis();
     
-    Serial.print("Touch: ");
-    Serial.print(x);
-    Serial.print(", ");
-    Serial.print(y);
-    
-    // Show touch on screen
-    tft.fillCircle(x % 320, y % 240, 4, TFT_WHITE);
-    
-    // Check if coordinates make sense
-    if (x > 50 && x < 4000 && y > 50 && y < 4000) {
-      Serial.println(" (RAW - needs calibration)");
-      // Try to map raw coordinates to screen coordinates
-      int screenX = map(x, 200, 3800, 0, 320);
-      int screenY = map(y, 200, 3800, 0, 240);
-      Serial.print("Mapped to: ");
-      Serial.print(screenX);
-      Serial.print(", ");
-      Serial.println(screenY);
-      
-      if (screenX >= 0 && screenX < 320 && screenY >= 0 && screenY < 240) {
-        tft.fillCircle(screenX, screenY, 4, TFT_GREEN);
-        handleTouch(screenX, screenY);
-      }
-    } else if (x < 320 && y < 240) {
-      Serial.println(" (CALIBRATED)");
-      handleTouch(x, y);
-    } else {
-      Serial.println(" (INVALID)");
-    }
-  }
+  //Initialise the touchscreen
+  touchscreenSpi.begin(XPT2046_CLK, XPT2046_MISO, XPT2046_MOSI, XPT2046_CS); /* Start second SPI bus for touchscreen */
+  touchscreen.begin(touchscreenSpi); /* Touchscreen init */
+  touchscreen.setRotation(1); /* Inverted landscape orientation to match screen */
+
+  //Initialise LVGL
+  lv_init();
+
+#if LV_USE_LOG != 0
+  lv_log_register_print_cb( my_print ); /* register print function for debugging */
+#endif
+
+  // Create display
+  lv_display_t * disp = lv_display_create(TFT_HOR_RES, TFT_VER_RES);
+  lv_display_set_flush_cb(disp, my_disp_flush);
   
-  delay(10);
+  // Allocate draw buffer using LVGL 9 API
+  draw_buf = new uint8_t[DRAW_BUF_SIZE];
+  lv_display_set_buffers(disp, draw_buf, NULL, DRAW_BUF_SIZE, LV_DISPLAY_RENDER_MODE_PARTIAL);
+
+  //Initialize the XPT2046 input device driver
+  indev = lv_indev_create();
+  lv_indev_set_type(indev, LV_INDEV_TYPE_POINTER);  
+  lv_indev_set_read_cb(indev, my_touchpad_read);
+
+  /* Try an example. See all the examples 
+   * online: https://docs.lvgl.io/master/examples.html
+   */
+  // lv_example_animimg_1();
+  // lv_example_arc_1();
+  // lv_example_arc_2();
+  // lv_example_bar_1();
+  // lv_example_bar_2();
+  // lv_example_bar_3();
+  // lv_example_bar_4();
+  // lv_example_bar_5();
+  // lv_example_bar_6();
+  // lv_example_btn_1();
+  // lv_example_btn_2();
+  // lv_example_btn_3();
+  // lv_example_btnmatrix_1();
+  // lv_example_btnmatrix_2();
+  // lv_example_btnmatrix_3();
+  // lv_example_calendar_1();
+  // lv_example_chart_1();
+  // lv_example_chart_2();
+  // lv_example_chart_3();
+  // lv_example_chart_4();
+  // lv_example_chart_5();
+  // lv_example_chart_6();
+  // lv_example_chart_7();
+  // lv_example_chart_8();
+  // lv_example_chart_9();
+  // lv_example_checkbox_1();
+  // lv_example_checkbox_2();
+  // lv_example_dropdown_1();
+  // lv_example_dropdown_2();
+  // lv_example_dropdown_3();
+  // lv_example_keyboard_1();
+  // lv_example_label_1();
+  // lv_example_label_2();
+  // lv_example_label_3();
+  // lv_example_label_4();
+  // lv_example_label_5();
+  // lv_example_line_1();
+  // lv_example_list_1();
+  // lv_example_list_2();
+  // lv_example_msgbox_1();
+  // lv_example_roller_1();
+  // lv_example_roller_2();
+  // lv_example_roller_3();
+  // lv_example_slider_1();
+  // lv_example_slider_2();
+  // lv_example_slider_3();
+  // lv_example_span_1();
+  // lv_example_spinbox_1();
+  // lv_example_spinner_1();
+  // lv_example_switch_1();
+  // lv_example_table_1();
+  // lv_example_table_2();
+  // lv_example_tabview_1();
+  // lv_example_tabview_2();
+  // lv_example_textarea_1();
+  // lv_example_textarea_2();
+  // lv_example_textarea_3();
+  // lv_example_tileview_1();
+  // lv_example_win_1();
+  
+  //Or try out the large standard widgets demo
+  // lv_demo_widgets();
+  // lv_demo_benchmark();          
+  // lv_demo_keypad_encoder();     
+  
+  
+
+  //Done
+  Serial.println( "Setup done" );
 }
 
-void scanTouchController() {
-  Serial.println("\n=== Scanning for Touch Controller ===");
-  
-  // Test different SPI configurations
-  int csPins[] = {21, 33, 5, 27, 32, 4, 16, 17};
-  
-  for (int i = 0; i < 8; i++) {
-    Serial.print("Testing CS pin ");
-    Serial.print(csPins[i]);
-    Serial.print("... ");
-    
-    pinMode(csPins[i], OUTPUT);
-    digitalWrite(csPins[i], HIGH);
-    delay(10);
-    
-    uint16_t x, y;
-    if (tft.getTouch(&x, &y)) {
-      Serial.print("Response: ");
-      Serial.print(x);
-      Serial.print(", ");
-      Serial.println(y);
-    } else {
-      Serial.println("No response");
-    }
-  }
-  
-  Serial.println("=== End Touch Scan ===\n");
-}
-
-void calibrateTouch() {
-  Serial.println("Starting touch calibration...");
-  tft.fillScreen(TFT_RED);
-  tft.setTextColor(TFT_WHITE);
-  tft.setTextSize(2);
-  tft.drawString("Touch corners", 50, 100);
-  
-  delay(2000);
-  
-  // Wait for touch in each corner to calibrate
-  Serial.println("Touch calibration skipped for now");
-  Serial.println("Will use auto-mapping in main loop");
-}
-
-void drawButtons() {
-  for (int i = 0; i < 6; i++) {
-    drawButton(i);
-  }
-}
-
-void drawButton(int buttonIndex) {
-  Button &btn = buttons[buttonIndex];
-  
-  // Draw button background
-  uint16_t bgColor = btn.pressed ? TFT_DARKGREY : btn.color;
-  tft.fillRoundRect(btn.x, btn.y, btn.w, btn.h, 5, bgColor);
-  
-  // Draw button border
-  tft.drawRoundRect(btn.x, btn.y, btn.w, btn.h, 5, TFT_WHITE);
-  
-  // Draw button text
-  tft.setTextColor(btn.textColor);
-  tft.setTextSize(1);
-  
-  // Center text in button
-  int textX = btn.x + (btn.w - btn.label.length() * 6) / 2;
-  int textY = btn.y + (btn.h - 8) / 2;
-  
-  tft.drawString(btn.label, textX, textY);
-  
-  // Draw button ID in corner
-  tft.setTextSize(1);
-  tft.setTextColor(TFT_LIGHTGREY);
-  tft.drawString(String(btn.id), btn.x + 5, btn.y + 5);
-}
-
-void handleTouch(uint16_t touchX, uint16_t touchY) {
-  for (int i = 0; i < 6; i++) {
-    Button &btn = buttons[i];
-    
-    // Check if touch is within button bounds
-    if (touchX >= btn.x && touchX <= (btn.x + btn.w) &&
-        touchY >= btn.y && touchY <= (btn.y + btn.h)) {
-      
-      // Button pressed
-      btn.pressed = true;
-      drawButton(i);
-      
-      // Handle button action
-      onButtonPress(btn.id);
-      
-      // Visual feedback
-      delay(100);
-      
-      // Release button
-      btn.pressed = false;
-      drawButton(i);
-      
-      break; // Only handle one button press at a time
-    }
-  }
-}
-
-void onButtonPress(int buttonId) {
-  Serial.print("=== BUTTON ");
-  Serial.print(buttonId);
-  Serial.println(" PRESSED! ===");
-  
-  // Add your custom actions here
-  switch (buttonId) {
-    case 1:
-      Serial.println("Action: Turn on LED");
-      // digitalWrite(LED_PIN, HIGH);
-      break;
-      
-    case 2:
-      Serial.println("Action: Turn off LED");
-      // digitalWrite(LED_PIN, LOW);
-      break;
-      
-    case 3:
-      Serial.println("Action: Start motor");
-      // startMotor();
-      break;
-      
-    case 4:
-      Serial.println("Action: Stop motor");
-      // stopMotor();
-      break;
-      
-    case 5:
-      Serial.println("Action: Read sensor");
-      // readSensorValue();
-      break;
-      
-    case 6:
-      Serial.println("Action: Reset system");
-      // resetSystem();
-      break;
-  }
+void loop()
+{   
+    lv_tick_inc(millis() - lastTick); //Update the tick timer. Tick is new for LVGL 9
+    lastTick = millis();
+    lv_timer_handler();               //Update the UI
+    delay(5);
 }
