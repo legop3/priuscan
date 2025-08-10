@@ -27,4 +27,6 @@ Things to control:
 - EV mode toggle
 - Battery fan speed (6 levels)
 
+touchtest.ino works for touchscreen
+
 ### Addresses and calculations:
