@@ -138,78 +138,82 @@ void setup()
   indev = lv_indev_create();
   lv_indev_set_type(indev, LV_INDEV_TYPE_POINTER);  
   lv_indev_set_read_cb(indev, my_touchpad_read);
-
-  /* Try an example. See all the examples 
-   * online: https://docs.lvgl.io/master/examples.html
-   */
-  // lv_example_animimg_1();
-  // lv_example_arc_1();
-  // lv_example_arc_2();
-  // lv_example_bar_1();
-  // lv_example_bar_2();
-  // lv_example_bar_3();
-  // lv_example_bar_4();
-  // lv_example_bar_5();
-  // lv_example_bar_6();
-  // lv_example_btn_1();
-  // lv_example_btn_2();
-  // lv_example_btn_3();
-  // lv_example_btnmatrix_1();
-  // lv_example_btnmatrix_2();
-  // lv_example_btnmatrix_3();
-  // lv_example_calendar_1();
-  // lv_example_chart_1();
-  // lv_example_chart_2();
-  // lv_example_chart_3();
-  // lv_example_chart_4();
-  // lv_example_chart_5();
-  // lv_example_chart_6();
-  // lv_example_chart_7();
-  // lv_example_chart_8();
-  // lv_example_chart_9();
-  // lv_example_checkbox_1();
-  // lv_example_checkbox_2();
-  // lv_example_dropdown_1();
-  // lv_example_dropdown_2();
-  // lv_example_dropdown_3();
-  // lv_example_keyboard_1();
-  // lv_example_label_1();
-  // lv_example_label_2();
-  // lv_example_label_3();
-  // lv_example_label_4();
-  // lv_example_label_5();
-  // lv_example_line_1();
-  // lv_example_list_1();
-  // lv_example_list_2();
-  // lv_example_msgbox_1();
-  // lv_example_roller_1();
-  // lv_example_roller_2();
-  // lv_example_roller_3();
-  // lv_example_slider_1();
-  // lv_example_slider_2();
-  // lv_example_slider_3();
-  // lv_example_span_1();
-  // lv_example_spinbox_1();
-  // lv_example_spinner_1();
-  // lv_example_switch_1();
-  // lv_example_table_1();
-  // lv_example_table_2();
-  // lv_example_tabview_1();
-  // lv_example_tabview_2();
-  // lv_example_textarea_1();
-  // lv_example_textarea_2();
-  // lv_example_textarea_3();
-  // lv_example_tileview_1();
-  // lv_example_win_1();
   
   //Or try out the large standard widgets demo
   // lv_demo_widgets();
   // lv_demo_benchmark();          
   // lv_demo_keypad_encoder();     
-  
-  
+///////////////////////////////////////////////////////////////////////
 
-  //Done
+  lv_obj_t * scr = lv_scr_act();
+  lv_obj_set_style_bg_color(scr, lv_color_hex(0x000000), LV_PART_MAIN);
+
+
+  // Disable scrolling entirely for the screen
+  lv_obj_clear_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
+
+  // Force the screen to use grid layout and match display size
+  lv_obj_set_size(scr, LV_HOR_RES, LV_VER_RES);
+
+  // Define a 3-column × 2-row grid, each cell is equal percentage of the screen
+  static lv_coord_t col_dsc[] = {LV_PCT(33), LV_PCT(33), LV_PCT(34), LV_GRID_TEMPLATE_LAST};
+  static lv_coord_t row_dsc[] = {LV_PCT(50), LV_PCT(50), LV_GRID_TEMPLATE_LAST};
+  lv_obj_set_grid_dsc_array(scr, col_dsc, row_dsc);
+
+  // Button 1
+  lv_obj_t * btn1 = lv_btn_create(scr);
+  lv_obj_set_style_bg_color(btn1, lv_color_hex(0xFF0000), LV_PART_MAIN); // Red background
+  lv_obj_set_style_bg_color(btn1, lv_color_hex(0xFFFFFF), LV_PART_MAIN | LV_STATE_PRESSED); // White background when pressed
+  lv_obj_set_grid_cell(btn1, LV_GRID_ALIGN_STRETCH, 0, 1, LV_GRID_ALIGN_STRETCH, 0, 1);
+  lv_obj_t * lbl1 = lv_label_create(btn1);
+  lv_label_set_text(lbl1, "Play");
+  lv_obj_center(lbl1);
+
+  // Button 2
+  lv_obj_t * btn2 = lv_btn_create(scr);
+  lv_obj_set_style_bg_color(btn2, lv_color_hex(0x00A605), LV_PART_MAIN);
+  lv_obj_set_style_bg_color(btn2, lv_color_hex(0xFFFFFF), LV_PART_MAIN | LV_STATE_PRESSED);
+  lv_obj_set_grid_cell(btn2, LV_GRID_ALIGN_STRETCH, 1, 1, LV_GRID_ALIGN_STRETCH, 0, 1);
+  lv_obj_t * lbl2 = lv_label_create(btn2);
+  lv_label_set_text(lbl2, "Pause");
+  lv_obj_center(lbl2);
+
+  // Button 3
+  lv_obj_t * btn3 = lv_btn_create(scr);
+  lv_obj_set_style_bg_color(btn3, lv_color_hex(0x00FFDE), LV_PART_MAIN);
+  lv_obj_set_style_bg_color(btn3, lv_color_hex(0xFFFFFF), LV_PART_MAIN | LV_STATE_PRESSED);
+  lv_obj_set_grid_cell(btn3, LV_GRID_ALIGN_STRETCH, 2, 1, LV_GRID_ALIGN_STRETCH, 0, 1);
+  lv_obj_t * lbl3 = lv_label_create(btn3);
+  lv_label_set_text(lbl3, "Stop");
+  lv_obj_center(lbl3);
+
+  // Button 4
+  lv_obj_t * btn4 = lv_btn_create(scr);
+  lv_obj_set_style_bg_color(btn4, lv_color_hex(0xAA00FF), LV_PART_MAIN);
+  lv_obj_set_style_bg_color(btn4, lv_color_hex(0xFFFFFF), LV_PART_MAIN | LV_STATE_PRESSED);
+  lv_obj_set_grid_cell(btn4, LV_GRID_ALIGN_STRETCH, 0, 1, LV_GRID_ALIGN_STRETCH, 1, 1);
+  lv_obj_t * lbl4 = lv_label_create(btn4);
+  lv_label_set_text(lbl4, "Rewind");
+  lv_obj_center(lbl4);
+
+  // Button 5
+  lv_obj_t * btn5 = lv_btn_create(scr);
+  lv_obj_set_style_bg_color(btn5, lv_color_hex(0xFF00E6), LV_PART_MAIN);
+  lv_obj_set_style_bg_color(btn5, lv_color_hex(0xFFFFFF), LV_PART_MAIN | LV_STATE_PRESSED);
+  lv_obj_set_grid_cell(btn5, LV_GRID_ALIGN_STRETCH, 1, 1, LV_GRID_ALIGN_STRETCH, 1, 1);
+  lv_obj_t * lbl5 = lv_label_create(btn5);
+  lv_label_set_text(lbl5, "Forward");
+  lv_obj_center(lbl5);
+
+  // Button 6
+  lv_obj_t * btn6 = lv_btn_create(scr);
+  lv_obj_set_style_bg_color(btn6, lv_color_hex(0xFF9900), LV_PART_MAIN);
+  lv_obj_set_style_bg_color(btn6, lv_color_hex(0xFFFFFF), LV_PART_MAIN | LV_STATE_PRESSED);
+  lv_obj_set_grid_cell(btn6, LV_GRID_ALIGN_STRETCH, 2, 1, LV_GRID_ALIGN_STRETCH, 1, 1);
+  lv_obj_t * lbl6 = lv_label_create(btn6);
+  lv_label_set_text(lbl6, "Record");
+  lv_obj_center(lbl6);
+/////////////////////////////////////////////////////////////
   Serial.println( "Setup done" );
 }
 
