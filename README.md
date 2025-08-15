@@ -30,3 +30,13 @@ Things to control:
 touchtest.ino works for touchscreen
 
 ### Addresses and calculations:
+
+Engine RPM: 0x1C4 
+
+Eco and PWR mode: 0x3BC
+EV MODE: 0X49B
+
+brake pedal but NOT break lights: 0x361
+brake pedal position: 0x224
+
+turn signals: 0x614
