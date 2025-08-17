@@ -68,14 +68,9 @@ inline uint16_t process_engine_rpm(const uint8_t *byte_data) {
 }
 
 inline float process_battery_current(const uint8_t *byte_data) {
-    // Assuming the battery current is in the first two bytes
-    // int16_t current = Process_Endian(byte_data[0], byte_data[1]);
-    // float battery_current = static_cast<float>(current) / 100.0f; // Adjust scaling as needed
-    // Serial.print("Battery Current: ");
-    // Serial.println(battery_current);
-    float battery_current = ((byte_data[4] * 256 + byte_data[5]) / 100.0f) - 327.28f;
-    // int battery_current = Process_Endian(byte_data[4], byte_data[5]) - 32728; // Adjust scaling as needed
-// 
+
+    // final battery current calculation
+    float battery_current = ((byte_data[4] * 256 + byte_data[5]) / 100.0f) - 327.7f;
     return battery_current;
 }
 
