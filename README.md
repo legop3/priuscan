@@ -60,12 +60,21 @@ gauge cluster: `18 80 df * * * * *`
 
 ## requested PIDs
 
+torque to can:
+(bytes count from 0 for use in cpp)
+byte A = byte 4
+byte B = byte 5
+byte C = byte 6
+byte D = byte 7
+
 battery current in amps: 
   - equation: (A * 256 + B) / 100 - 327.68
   - A = byte 4, B = byte 5
   - request: 0x7E2: 0x02 0x21 0x98 0x00 0x00 0x00 0x00 0x00 
 
-
+battery voltage in v:
+  - equation: (AE * 256 + AF) / 10
+  
 
 cpp notes:
 
