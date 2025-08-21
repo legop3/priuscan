@@ -1,22 +1,31 @@
 /*
-  Required Arduino Libraries:
-  - LovyanGFX https://github.com/lovyan03/LovyanGFX
-  - lvgl https://github.com/lvgl/lvgl
+  LVGL v8.x + LovyanGFX v1 + EEZ (UI-only) — high-FPS, artifact-hardened
+  - PCLK increased (default 24 MHz; adjust below)
+  - Toggleable PCLK sampling edge (try 0/1 if you see horizontal smear)
+  - Stronger GPIO drive on RGB/sync/PCLK pins (ESP32-S3)
+  - DMA-capable double draw buffers in internal SRAM
+  - Safe DMA flush: pushImageDMA + waitDMA() before lv_disp_flush_ready
+  - True 5 ms LVGL tick; refresh timer set to 10 ms (v8: via _lv_disp_get_refr_timer)
 */
+
 #include <Arduino.h>
 #include <Wire.h>
 #include <SPI.h>
-#include <lvgl.h>
-
-//EEZ studio UI files
-// #include "ui.h"
-// #include "screens.h"
 
 // #define EEZ_FOR_LVGL
+#define EEZ_UI_MAIN_SYMBOL SCREEN_ID_MAIN
+
+#include <lvgl.h>
+
+// EEZ C headers (C linkage)
+#ifdef __cplusplus
 extern "C" {
-  #include "ui.h"
-  // #include "screens.h"
+#endif
+#include "ui.h"
+#include "screens.h"
+#ifdef __cplusplus
 }
+#endif
 
 #define GFX_BL  2   // Backlight pin
 
@@ -25,14 +34,45 @@ extern "C" {
 #include <lgfx/v1/platforms/esp32s3/Panel_RGB.hpp>
 #include <lgfx/v1/platforms/esp32s3/Bus_RGB.hpp>
 
-// LovyanGFX Display Class
+// ESP32-S3 helpers for drive strength + DMA allocations
+#include "driver/gpio.h"
+#include "esp_heap_caps.h"
+
+// ──────────────────────────────────────────────────────────────
+// TUNABLES
+// ──────────────────────────────────────────────────────────────
+// #define PCLK_HZ            10000000   // ↑ try 24 MHz first; raise only if clean
+#define PCLK_HZ            15000000   // ↑ try 24 MHz first; raise only if clean
+#define PCLK_ACTIVE_NEG    0          // try 0 or 1; wrong edge => horizontal scrambling
+#define GPIO_DRIVE_LEVEL   GPIO_DRIVE_CAP_1  // 0..3 (S3); 3 = strongest
+
+// ──────────────────────────────────────────────────────────────
+// Apply stronger drive on all RGB pins + sync + PCLK
+// ──────────────────────────────────────────────────────────────
+static void set_rgb_drive_strength() {
+  const gpio_num_t pins[] = {
+    // B0..B4
+    GPIO_NUM_15, GPIO_NUM_7, GPIO_NUM_6, GPIO_NUM_5, GPIO_NUM_4,
+    // G0..G5
+    GPIO_NUM_9,  GPIO_NUM_46, GPIO_NUM_3, GPIO_NUM_8, GPIO_NUM_16, GPIO_NUM_1,
+    // R0..R4
+    GPIO_NUM_14, GPIO_NUM_21, GPIO_NUM_47, GPIO_NUM_48, GPIO_NUM_45,
+    // DE, VS, HS, PCLK
+    GPIO_NUM_41, GPIO_NUM_40, GPIO_NUM_39, GPIO_NUM_0
+  };
+  for (auto p : pins) { gpio_set_drive_capability(p, GPIO_DRIVE_LEVEL); }
+}
+
+// ──────────────────────────────────────────────────────────────
+// LovyanGFX display for ESP32-S3 RGB panel (800x480)
+// ──────────────────────────────────────────────────────────────
 class LGFX : public lgfx::LGFX_Device {
 public:
   lgfx::Bus_RGB     _bus_instance;
   lgfx::Panel_RGB   _panel_instance;
 
   LGFX(void) {
-    {
+    { // Bus config
       auto cfg = _bus_instance.config();
       cfg.panel = &_panel_instance;
 
@@ -42,14 +82,14 @@ public:
       cfg.pin_d2  = GPIO_NUM_6;  // B2
       cfg.pin_d3  = GPIO_NUM_5;  // B3
       cfg.pin_d4  = GPIO_NUM_4;  // B4
-      
+
       cfg.pin_d5  = GPIO_NUM_9;  // G0
       cfg.pin_d6  = GPIO_NUM_46; // G1
       cfg.pin_d7  = GPIO_NUM_3;  // G2
       cfg.pin_d8  = GPIO_NUM_8;  // G3
       cfg.pin_d9  = GPIO_NUM_16; // G4
       cfg.pin_d10 = GPIO_NUM_1;  // G5
-      
+
       cfg.pin_d11 = GPIO_NUM_14; // R0
       cfg.pin_d12 = GPIO_NUM_21; // R1
       cfg.pin_d13 = GPIO_NUM_47; // R2
@@ -61,27 +101,27 @@ public:
       cfg.pin_vsync   = GPIO_NUM_40;
       cfg.pin_hsync   = GPIO_NUM_39;
       cfg.pin_pclk    = GPIO_NUM_0;
-      cfg.freq_write  = 15000000;
 
-      // Sync timings
-      cfg.hsync_polarity    = 0;
-      cfg.hsync_front_porch = 40;
-      cfg.hsync_pulse_width = 48;
-      cfg.hsync_back_porch  = 40;
-      
-      cfg.vsync_polarity    = 0;
-      cfg.vsync_front_porch = 1;
-      cfg.vsync_pulse_width = 31;
-      cfg.vsync_back_porch  = 13;
+      cfg.freq_write      = PCLK_HZ;
+      cfg.pclk_active_neg = PCLK_ACTIVE_NEG; // sampling edge
+      cfg.de_idle_high    = 0;
+      cfg.pclk_idle_high  = 0;
 
-      cfg.pclk_active_neg   = 1;
-      cfg.de_idle_high      = 0;
-      cfg.pclk_idle_high    = 0;
+      // Keep your proven baseline timings at higher PCLK (tighten later if clean)
+      cfg.hsync_polarity    = 1;
+      cfg.hsync_front_porch = 4;
+      cfg.hsync_pulse_width = 4;
+      cfg.hsync_back_porch  = 20;
+
+      cfg.vsync_polarity    = 1;
+      cfg.vsync_front_porch = 4;
+      cfg.vsync_pulse_width = 4;
+      cfg.vsync_back_porch  = 20;
 
       _bus_instance.config(cfg);
     }
 
-    {
+    { // Panel config
       auto cfg = _panel_instance.config();
       cfg.memory_width  = 800;
       cfg.memory_height = 480;
@@ -96,103 +136,165 @@ public:
     setPanel(&_panel_instance);
   }
 };
+
 LGFX lcd;
 
-// LVGL display buffer and driver
+// ──────────────────────────────────────────────────────────────
+// LVGL display driver (v8.x)
+// ──────────────────────────────────────────────────────────────
 static uint32_t screenWidth;
 static uint32_t screenHeight;
 static lv_disp_draw_buf_t draw_buf;
-static lv_color_t disp_draw_buf[800 * 480 / 10];
+static lv_color_t *buf1 = nullptr;
+static lv_color_t *buf2 = nullptr;
 static lv_disp_drv_t disp_drv;
 
-/* LVGL flush callback */
-void my_disp_flush(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *color_p)
-{
-  Serial.println("Flushing display...");
+// Allocate two DMA-capable line buffers in internal SRAM (fallback ladder)
+static const int TARGET_BUF_LINES[] = { 80, 64, 48, 40, 32, 24, 16 };
+
+static bool alloc_lvgl_draw_buffers(uint16_t w) {
+  for (int lines : TARGET_BUF_LINES) {
+    size_t px    = (size_t)w * (size_t)lines;
+    size_t bytes = px * sizeof(lv_color_t);
+    lv_color_t *b1 = (lv_color_t*)heap_caps_malloc(bytes, MALLOC_CAP_DMA);
+    lv_color_t *b2 = (lv_color_t*)heap_caps_malloc(bytes, MALLOC_CAP_DMA);
+    if (b1 && b2) {
+      buf1 = b1; buf2 = b2;
+      lv_disp_draw_buf_init(&draw_buf, buf1, buf2, px);
+      Serial.printf("LVGL draw buffers: %d lines x2 (%u bytes each)\n", lines, (unsigned)bytes);
+      return true;
+    }
+    if (b1) heap_caps_free(b1);
+    if (b2) heap_caps_free(b2);
+  }
+  // single-buffer fallback (still DMA RAM)
+  int lines = 16;
+  size_t px    = (size_t)w * (size_t)lines;
+  size_t bytes = px * sizeof(lv_color_t);
+  buf1 = (lv_color_t*)heap_caps_malloc(bytes, MALLOC_CAP_DMA);
+  if (buf1) {
+    lv_disp_draw_buf_init(&draw_buf, buf1, nullptr, px);
+    Serial.printf("LVGL draw buffer: %d lines (single) (%u bytes)\n", lines, (unsigned)bytes);
+    return true;
+  }
+  return false;
+}
+
+// Safe DMA flush (LovyanGFX v1): waitDMA() before releasing the buffer
+static void my_disp_flush(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *color_p) {
   uint32_t w = (area->x2 - area->x1 + 1);
   uint32_t h = (area->y2 - area->y1 + 1);
-
-  lcd.pushImageDMA(area->x1, area->y1, w, h, (lgfx::rgb565_t*)&color_p->full);
+  lcd.pushImageDMA(area->x1, area->y1, w, h, (const lgfx::rgb565_t*)&color_p->full);
+  lcd.waitDMA();                 // <— correct v1 API (was dmaWait)
   lv_disp_flush_ready(disp);
 }
 
-/* Create a simple UI */
-// void ui_init(void)
-// {
-//   lv_obj_t * main_screen = lv_obj_create(NULL);
-//   lv_obj_set_style_bg_color(main_screen, lv_color_hex(0x1e1e1e), LV_PART_MAIN);
-//   lv_scr_load(main_screen);
+// ──────────────────────────────────────────────────────────────
+// LVGL tick @ real 5ms (v8.x)
+// ──────────────────────────────────────────────────────────────
+static hw_timer_t * lv_tick_timer = nullptr;
+static void IRAM_ATTR onLvglTick() {
+  lv_tick_inc(5);  // true 5 ms
+}
 
-//   lv_obj_t * title_label = lv_label_create(main_screen);
-//   lv_label_set_text(title_label, "LVGL Display Demo (No Touch)");
-//   lv_obj_set_style_text_font(title_label, &lv_font_montserrat_24, 0);
-//   lv_obj_set_style_text_color(title_label, lv_color_white(), 0);
-//   lv_obj_align(title_label, LV_ALIGN_TOP_MID, 0, 20);
+// ──────────────────────────────────────────────────────────────
+// Helpers (optional)
+// ──────────────────────────────────────────────────────────────
+static void inspect_active_screen() {
+  lv_obj_t *scr = lv_scr_act();
+  uint32_t cnt = lv_obj_get_child_cnt(scr);
+  Serial.printf("EEZ/LVGL: active screen children = %u\n", (unsigned)cnt);
+  for (uint32_t i = 0; i < cnt; i++) {
+    lv_obj_t *c = lv_obj_get_child(scr, i);
+    Serial.printf("  [%u] hidden=%d opa=%u w=%d h=%d\n", i,
+      lv_obj_has_flag(c, LV_OBJ_FLAG_HIDDEN),
+      (unsigned)lv_obj_get_style_opa(c, 0),
+      (int)lv_obj_get_width(c),
+      (int)lv_obj_get_height(c));
+  }
+}
 
-//   lv_obj_t * status_label = lv_label_create(main_screen);
-//   lv_label_set_text(status_label, "Touch Disabled");
-//   lv_obj_set_style_text_color(status_label, lv_color_white(), 0);
-//   lv_obj_align(status_label, LV_ALIGN_CENTER, 0, 0);
-
-//   lv_obj_t * info_label = lv_label_create(main_screen);
-//   lv_label_set_text(info_label, "Static UI Example");
-//   lv_obj_set_style_text_color(info_label, lv_color_white(), 0);
-//   lv_obj_align(info_label, LV_ALIGN_BOTTOM_MID, 0, -20);
-
-//   Serial.println("UI created successfully without touch!");
-// }
-
-void setup()
-{
+// ──────────────────────────────────────────────────────────────
+// SETUP / LOOP
+// ──────────────────────────────────────────────────────────────
+void setup() {
   Serial.begin(115200);
-  Serial.println("LVGL Display Demo Starting...");
+  Serial.println("Start: LVGL + EEZ (UI-only) — high-FPS SI-hardened (LVGL v8)");
+
+  // Strengthen drive BEFORE lcd.begin()
+  set_rgb_drive_strength();
 
   lcd.begin();
-  lcd.setTextSize(2);
-  delay(200);
-  
-  lv_init();
-  delay(100);
-
-  // Backlight ON
+  // lcd.setRotation(3);
   pinMode(GFX_BL, OUTPUT);
   digitalWrite(GFX_BL, HIGH);
 
-  screenWidth = lcd.width();
-  screenHeight = lcd.height();
-  
-  Serial.printf("Screen resolution: %d x %d\n", screenWidth, screenHeight);
+  lv_init();
 
-  lv_disp_draw_buf_init(&draw_buf, disp_draw_buf, NULL, screenWidth * screenHeight / 10);
-  
+  screenWidth  = lcd.width();
+  screenHeight = lcd.height();
+  Serial.printf("Screen: %ux%u\n", (unsigned)screenWidth, (unsigned)screenHeight);
+
+  if (!alloc_lvgl_draw_buffers(screenWidth)) {
+    Serial.println("FATAL: could not allocate LVGL DMA buffers");
+    for(;;) delay(1000);
+  }
+
   lv_disp_drv_init(&disp_drv);
-  disp_drv.hor_res = screenWidth;
-  disp_drv.ver_res = screenHeight;
+  disp_drv.hor_res  = screenWidth;
+  disp_drv.ver_res  = screenHeight;
   disp_drv.flush_cb = my_disp_flush;
   disp_drv.draw_buf = &draw_buf;
-  lv_disp_drv_register(&disp_drv);
+  lv_disp_t *disp = lv_disp_drv_register(&disp_drv);
 
-  delay(500);
-  // Create UI
+  // v8.x: tighten the internal refresh timer to ~10 ms
+  lv_timer_t *refr = _lv_disp_get_refr_timer(disp);   // internal getter is available in v8
+  if (refr) lv_timer_set_period(refr, 10);
+
+  // 5ms LVGL tick (hardware timer)
+  lv_tick_timer = timerBegin(0, 80, true); // 80 MHz / 80 = 1 MHz
+  timerAttachInterrupt(lv_tick_timer, &onLvglTick, true);
+  timerAlarmWrite(lv_tick_timer, 5000, true); // 5000 us = 5 ms
+  timerAlarmEnable(lv_tick_timer);
+
+  delay(200);
   ui_init();
-  // Serial.println("UI initialized");
+  // inspect_active_screen();
 
-  // // Delete the current empty screen
-  // lv_obj_t* old_screen = lv_scr_act();
-  // Serial.printf("Deleting old screen: %p\n", old_screen);
-
-  // lv_scr_load(objects.main);
-  // lv_obj_del(old_screen); // Delete after loading new one
-
-  // lv_timer_handler();
-  // Serial.println("Old screen deleted, new screen loaded");
-
+  // Print expected FPS with current totals (928 x 525)
+  // const uint32_t Htot = 800 + 40 + 48 + 40;
+  // const uint32_t Vtot = 480 + 1  + 31 + 13;
+  // float fps = (float)PCLK_HZ / (float)(Htot * Vtot);
+  // Serial.printf("Timing: PCLK=%lu Hz, Htot=%lu, Vtot=%lu -> FPS≈%.2f\n",
+  //               (unsigned long)PCLK_HZ, (unsigned long)Htot, (unsigned long)Vtot, fps);
 }
 
-void loop()
-{
+void loop() {
   lv_timer_handler();
-  // lv_task_handler();
-  ui_tick();
-  delay(5);
+
+  // Cheaper updates: remove easing work
+
+
+  // update kw_bar and kw_label
+  lv_bar_set_value(objects.kw_bar, (lv_bar_get_value(objects.kw_bar) + 4) % 51, LV_ANIM_OFF);
+  lv_bar_set_start_value(objects.kw_bar, (lv_bar_get_start_value(objects.kw_bar) - 8) % 51, LV_ANIM_OFF);
+  lv_label_set_text_fmt(objects.kw_label, "%d\nkW", millis() / 1000);
+
+
+  // update rpm_bar and rpm_label
+  lv_bar_set_value(objects.rpm_bar, (lv_bar_get_value(objects.rpm_bar) + 30) % 1001, LV_ANIM_OFF);
+  lv_label_set_text_fmt(objects.rpm_label, "%d\nRPM", millis() / 10);
+
+
+  // lv_bar_set
+
+
+  // str kw_label_text = String(millis() / 1000) + "\nkW";
+  // lv_label_set_text(objects.kw_label, kw_label_text.c_str());
+
+
+  // lv_label_set_text(objects.kw_label, (String(millis() / 1000) + "\nkW".c_str()));
+  // set kw_label to number and add "kW" at the end
+
+  // delay(1); // yield
 }
