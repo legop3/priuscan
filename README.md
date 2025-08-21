@@ -43,6 +43,13 @@ turn signals: 0x614
 
 0x621: something to do with door locking / unlocking!!
 
+pwr / eco bar
+0x247 
+msb: 0
+lsb: 1
+
+subtract: 
+
 # 0x631
 0x631: fuzzing this made the car go crazy, and made the windows move!!!
 

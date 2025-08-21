@@ -96,7 +96,7 @@ unsigned long lastPollTime = 0;
 const unsigned long POLL_INTERVAL = 100; // Poll every 100ms
 
 // Sensor polling stuff
-volatile float g_sensors[10] = {0}; // All sensor values
+volatile float g_sensors[20] = {0}; // All sensor values
 uint8_t sensor_num = 0;             // Which sensor we're on (0,1,2,3,4...)
 bool waiting = false;               // Are we waiting for a response?
 unsigned long requestTimeout = 0;   // When we sent the last request
@@ -179,10 +179,35 @@ void loop() {
     // STEP 3: Process CAN messages
     if (CAN0.read(can_message)) {
         switch (can_message.id) {
+
             // Engine RPM (non-polled)
             case 0x1C4:
                 g_sensors[0] = Process_Endian(can_message.data.byte[0], can_message.data.byte[1]);
                 break;
+
+            // energy bar (non-polled)
+            case 0x247: { // BO_ 583 Display_1
+                const uint8_t* d = can_message.data.byte;
+
+                // SG_ BAR_ENERGY : 15|8@0-   -> signed 8-bit at byte 1
+                int8_t bar_energy = (int8_t)d[1];
+
+                // SG_ STATE_ENERGYDRAIN : 3|4@0+ -> bits 3..0 of byte 0
+                uint8_t state_energy_drain = d[0] & 0x0F;
+
+                // TODO: store them wherever you like
+                // e.g., g_sensors[8] = bar_energy;
+                //       g_sensors[9] = state_energy_drain;
+
+                g_sensors[9] = bar_energy;
+                g_sensors[10] = state_energy_drain;
+
+                // (optional) quick print
+                // Serial.print("BAR_ENERGY="); Serial.print(bar_energy);
+                // Serial.print("  STATE_ENERGYDRAIN="); Serial.println(state_energy_drain);
+                break;
+            }
+
 
             // Polled sensor responses
             case 0x7EA: {
@@ -336,7 +361,13 @@ void loop() {
         Serial.print("TB2: "); Serial.print(g_sensors[IDX_HV_TB2_C], 1); Serial.print("C ");
         Serial.print("TB3: "); Serial.print(g_sensors[IDX_HV_TB3_C], 1); Serial.print("C ");
         Serial.print("SOC: "); Serial.print(g_sensors[8], 1); Serial.print("% ");
+        Serial.print("Ebar: "); Serial.print(g_sensors[9]); Serial.print("  ");
+        Serial.print("ES: "); Serial.print(g_sensors[10]); Serial.print("  ");
         Serial.println();
+
+
+
+
         lastPrintTime = currentTime;
     }
 }
