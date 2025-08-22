@@ -153,7 +153,7 @@
               },
               "timeline": [],
               "eventHandlers": [],
-              "identifier": "kw_bar",
+              "identifier": "kw_watts_bar",
               "leftUnit": "px",
               "topUnit": "px",
               "widthUnit": "px",
@@ -242,12 +242,12 @@
               },
               "group": "",
               "groupIndex": 0,
-              "min": -50,
-              "max": 50,
+              "min": -20000,
+              "max": 20000,
               "mode": "RANGE",
-              "value": 24,
+              "value": 20000,
               "valueType": "literal",
-              "valueStart": -10,
+              "valueStart": -11000,
               "valueStartType": "literal",
               "enableAnimation": false
             },
@@ -359,7 +359,7 @@
               "group": "",
               "groupIndex": 0,
               "min": 0,
-              "max": 4000,
+              "max": 5500,
               "mode": "NORMAL",
               "value": 1000,
               "valueType": "literal",
@@ -443,7 +443,8 @@
                 "bg_color": "#000000",
                 "bg_opa": 50,
                 "pad_left": 4,
-                "pad_right": 4
+                "pad_right": 4,
+                "radius": 10
               }
             }
           }

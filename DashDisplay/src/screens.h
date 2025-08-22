@@ -9,7 +9,7 @@ extern "C" {
 
 typedef struct _objects_t {
     lv_obj_t *main;
-    lv_obj_t *kw_bar;
+    lv_obj_t *kw_watts_bar;
     lv_obj_t *kw_label;
     lv_obj_t *rpm_bar;
     lv_obj_t *rpm_label;

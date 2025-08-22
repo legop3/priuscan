@@ -23,15 +23,15 @@ void create_screen_main() {
     {
         lv_obj_t *parent_obj = obj;
         {
-            // kw_bar
+            // kw_watts_bar
             lv_obj_t *obj = lv_bar_create(parent_obj);
-            objects.kw_bar = obj;
+            objects.kw_watts_bar = obj;
             lv_obj_set_pos(obj, 656, 0);
             lv_obj_set_size(obj, 144, 480);
-            lv_bar_set_range(obj, -50, 50);
+            lv_bar_set_range(obj, -20000, 20000);
             lv_bar_set_mode(obj, LV_BAR_MODE_RANGE);
-            lv_bar_set_value(obj, 24, LV_ANIM_OFF);
-            lv_bar_set_start_value(obj, -10, LV_ANIM_OFF);
+            lv_bar_set_value(obj, 20000, LV_ANIM_OFF);
+            lv_bar_set_start_value(obj, -11000, LV_ANIM_OFF);
             add_style_sharp_square(obj);
             lv_obj_set_style_bg_color(obj, lv_color_hex(0xff00ff26), LV_PART_INDICATOR | LV_STATE_DEFAULT);
             lv_obj_set_style_bg_color(obj, lv_color_hex(0xff00ff26), LV_PART_MAIN | LV_STATE_DEFAULT);
@@ -58,7 +58,7 @@ void create_screen_main() {
             objects.rpm_bar = obj;
             lv_obj_set_pos(obj, 512, 0);
             lv_obj_set_size(obj, 144, 480);
-            lv_bar_set_range(obj, 0, 4000);
+            lv_bar_set_range(obj, 0, 5500);
             lv_bar_set_value(obj, 1000, LV_ANIM_OFF);
             add_style_sharp_square(obj);
             lv_obj_set_style_bg_color(obj, lv_color_hex(0xffffa000), LV_PART_INDICATOR | LV_STATE_DEFAULT);

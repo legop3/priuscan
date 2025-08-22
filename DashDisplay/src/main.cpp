@@ -46,6 +46,83 @@ extern "C" {
 #define PCLK_ACTIVE_NEG    0          // try 0 or 1; wrong edge => horizontal scrambling
 #define GPIO_DRIVE_LEVEL   GPIO_DRIVE_CAP_1  // 0..3 (S3); 3 = strongest
 
+// ============ UART link: payload & pins (ESP32‑S3) ============
+#include <HardwareSerial.h>
+HardwareSerial& LINK = Serial2;
+
+// Use the pins you mentioned:
+static const int LINK_RX = 19;     // from sender's TX
+static const int LINK_TX = 20;     // to sender's RX (usually unused on display)
+static const uint32_t LINK_BAUD = 230400;  // match the sender
+
+#pragma pack(push,1)
+struct PayloadF {
+  uint8_t seq;
+  float   rpm;
+  float   hv_current_A;
+  float   hv_voltage_V;
+  float   ect_C;
+  float   hv_intake_C;
+  float   tb1_C;
+  float   tb2_C;
+  float   tb3_C;
+  float   soc_pct;
+  int8_t  ebar;
+  uint8_t est;
+};
+#pragma pack(pop)
+
+// ============ Simple framed parser (0xAA | LEN | payload | XOR) ============
+static inline uint8_t xor_checksum(const uint8_t* p, size_t n) {
+  uint8_t x = 0; for (size_t i=0;i<n;++i) x ^= p[i]; return x;
+}
+
+enum class RxState : uint8_t { WAIT_START, WAIT_LEN, WAIT_PAYLOAD, WAIT_CSUM };
+static RxState  rxState = RxState::WAIT_START;
+static uint8_t  rxLen   = 0;
+static uint8_t  rxBuf[128];
+static uint8_t  rxIdx   = 0;
+
+static const uint8_t START_BYTE = 0xAA;
+static const uint8_t EXPECTED_LEN = sizeof(PayloadF);
+
+static volatile bool havePacket = false;
+static PayloadF lastPacket{};
+static uint8_t  lastSeq = 0;
+static unsigned long lastRxMs = 0;
+
+static void pollUart() {
+  while (LINK.available()) {
+    uint8_t b = (uint8_t)LINK.read();
+    switch (rxState) {
+      case RxState::WAIT_START:
+        if (b == START_BYTE) rxState = RxState::WAIT_LEN;
+        break;
+      case RxState::WAIT_LEN:
+        rxLen = b;
+        if (rxLen == 0 || rxLen > sizeof(rxBuf)) { rxState = RxState::WAIT_START; }
+        else { rxIdx = 0; rxState = RxState::WAIT_PAYLOAD; }
+        break;
+      case RxState::WAIT_PAYLOAD:
+        rxBuf[rxIdx++] = b;
+        if (rxIdx >= rxLen) rxState = RxState::WAIT_CSUM;
+        break;
+      case RxState::WAIT_CSUM: {
+        uint8_t calc = xor_checksum(rxBuf, rxLen);
+        if (calc == b && rxLen == EXPECTED_LEN) {
+          memcpy(&lastPacket, rxBuf, EXPECTED_LEN);
+          havePacket = true;
+          lastSeq = lastPacket.seq;
+          lastRxMs = millis();
+        }
+        rxState = RxState::WAIT_START;
+        break;
+      }
+    }
+  }
+}
+
+
 // ──────────────────────────────────────────────────────────────
 // Apply stronger drive on all RGB pins + sync + PCLK
 // ──────────────────────────────────────────────────────────────
@@ -219,6 +296,13 @@ static void inspect_active_screen() {
 // ──────────────────────────────────────────────────────────────
 void setup() {
   Serial.begin(115200);
+
+    // ---- UART link init (display side) ----
+  LINK.begin(LINK_BAUD, SERIAL_8N1, LINK_RX, LINK_TX);
+  Serial.printf("UART link on Serial2 @ %lu, RX=%d TX=%d\n",
+                (unsigned long)LINK_BAUD, LINK_RX, LINK_TX);
+
+
   Serial.println("Start: LVGL + EEZ (UI-only) — high-FPS SI-hardened (LVGL v8)");
 
   // Strengthen drive BEFORE lcd.begin()
@@ -269,32 +353,110 @@ void setup() {
   //               (unsigned long)PCLK_HZ, (unsigned long)Htot, (unsigned long)Vtot, fps);
 }
 
+// static colors for kW bar:
+// static lv_style_t style_kw_green;
+// static lv_style_t style_kw_blue;
+
+// lv_style_init(&style_kw_green);
+// lv_style_set_bg_color(&style_kw_green, lv_color_hex(0x00ff26));
+// lv_style_set_opa(&style_kw_green, LV_OPA_COVER);
+
+// lv_style_init(&style_kw_blue);
+// lv_style_set_bg_color(&style_kw_blue, lv_color_hex(0x33F7FF));
+// lv_style_set_opa(&style_kw_blue, LV_OPA_COVER);
+
+
 void loop() {
   lv_timer_handler();
 
-  // Cheaper updates: remove easing work
+  // ---- pump UART ----
+  pollUart();
+
+  // ---- UI update cadence (every ~50 ms) ----
+  static unsigned long lastUi = 0;
+  unsigned long now = millis();
+  if (now - lastUi >= 50) {
+    lastUi = now;
+
+    // If data is fresh (< 500 ms since last packet), show it; otherwise dim/fallback
+    bool fresh = (now - lastRxMs) < 500;
+
+    if (fresh) {
+
+      // RPM bar
+      int rpm_val = (int)roundf(lastPacket.rpm);
+      rpm_val = constrain(rpm_val, 0, 100000); // guard
+      lv_bar_set_value(objects.rpm_bar, rpm_val, LV_ANIM_OFF);
+      lv_label_set_text_fmt(objects.rpm_label, "%d\nRPM", rpm_val);
+
+      // Watts bar
+      int watts = round((lastPacket.hv_voltage_V * lastPacket.hv_current_A));
+      // Serial.println("Watts: " + String(watts));
+
+      // change direction of meter based on watts in (negative) or watts out (positive)
+      if(watts >= 0) {
+        // if watts out start bar from bottom, change color
+        lv_bar_set_start_value(objects.kw_watts_bar, -20000, LV_ANIM_OFF);
+        lv_bar_set_value(objects.kw_watts_bar, (watts - 20000), LV_ANIM_OFF);
+        // lv_style_set_bg_color(objects.kw_watts_bar, lv_color_hex(0x00ff26), LV_PART_INDICATOR);
+        lv_obj_add_style(objects.kw_watts_bar, &style_kw_green, LV_PART_INDICATOR);
 
 
-  // update kw_bar and kw_label
-  lv_bar_set_value(objects.kw_bar, (lv_bar_get_value(objects.kw_bar) + 4) % 51, LV_ANIM_OFF);
-  lv_bar_set_start_value(objects.kw_bar, (lv_bar_get_start_value(objects.kw_bar) - 8) % 51, LV_ANIM_OFF);
-  lv_label_set_text_fmt(objects.kw_label, "%d\nkW", millis() / 1000);
+      } else {
+        // if watts in start bar from top, change color
+        lv_bar_set_value(objects.kw_watts_bar, 20000, LV_ANIM_OFF);
+        lv_bar_set_start_value(objects.kw_watts_bar, (watts + 20000), LV_ANIM_OFF);
+        // lv_style_set_bg_color(objects.kw_watts_bar, lv_color_hex(0x33F7FF), LV_PART_INDICATOR);
+        lv_obj_add_style(objects.kw_watts_bar, &style_kw_blue, LV_PART_INDICATOR);
+      }
+
+      // label it in kW though
+      float kW = (watts / 1000.0f);
+      char kw_buf[16];
+      snprintf(kw_buf, sizeof(kw_buf), "%.2f\nkW", kW);
+      lv_label_set_text(objects.kw_label, kw_buf);
+      // lv_label_set_text_fmt(objects.kw_label, "%.2f\nkW", kW);
 
 
-  // update rpm_bar and rpm_label
-  lv_bar_set_value(objects.rpm_bar, (lv_bar_get_value(objects.rpm_bar) + 30) % 1001, LV_ANIM_OFF);
-  lv_label_set_text_fmt(objects.rpm_label, "%d\nRPM", millis() / 10);
 
 
-  // lv_bar_set
+      // kW (approx = V * I / 1000); negative allowed => regen
+      // float kW = lastPacket.hv_voltage_V * lastPacket.hv_current_A / 1000.0f;
+      // Map to your bar’s range [0..50] or symmetric if you prefer
+      // int kw_bar_scaled = (int)roundf(kW * 100);                 // simple: -?
 
+      // Serial.println("EEZ: kW = " + String(kW, 2) + " (" + String(kw_bar_scaled) + ")");
 
-  // str kw_label_text = String(millis() / 1000) + "\nkW";
-  // lv_label_set_text(objects.kw_label, kw_label_text.c_str());
+      // if(kW >= 0) {
+        // if positive kw, start bar from bottom
+        // lv_bar_set_start_value(objects.kw_bar, -300, LV_ANIM_OFF);
+        // lv_bar_set_value(objects.kw_bar, kw_bar_scaled, LV_ANIM_OFF);
+      // } else {
+        // if negative kw, start bar from top
+      //   lv_bar_set_start_value(objects.kw_bar, kw_bar_scaled, LV_ANIM_OFF);
+      //   lv_bar_set_value(objects.kw_bar, 300, LV_ANIM_OFF);
+      // }
 
+      // lv_label_set_text_fmt(objects.kw_label, "%.2f\nkW", kW);
+      
+      // kw_bar = constrain(kw_bar, -50, 50);
+      // If your bar only supports 0..50, offset negatives:
+      // int kw_bar_u = kw_bar + 50;                   // 0..100
+      // lv_bar_set_range(objects.kw_bar, 0, 100);
+      // lv_bar_set_value(objects.kw_bar, kw_bar_u, LV_ANIM_OFF);
+      // lv_label_set_text_fmt(objects.kw_label, "%.1f\nkW", kW);
 
-  // lv_label_set_text(objects.kw_label, (String(millis() / 1000) + "\nkW".c_str()));
-  // set kw_label to number and add "kW" at the end
+      // (Add more bindings as needed)
+      // e.g., coolant, SOC, temps:
+      // lv_label_set_text_fmt(objects.coolant_label, "%.1f°C", lastPacket.ect_C);
+      // lv_bar_set_value(objects.soc_bar, (int)roundf(lastPacket.soc_pct), LV_ANIM_OFF);
 
-  // delay(1); // yield
+    } else {
+      // stale: optionally gray-out or show placeholders
+      // Example: keep last values but set a subtle status somewhere
+      // lv_obj_add_state(objects.rpm_bar, LV_STATE_DISABLED);
+      // lv_obj_add_state(objects.kw_bar, LV_STATE_DISABLED);
+    }
+  }
 }
+

@@ -3,6 +3,17 @@
 
 #define SHIELD_LED_PIN 26
 
+// ====== SIMPLE UART: FLOATS, NO SCALING ======
+#include <HardwareSerial.h>
+HardwareSerial& DISP = Serial2;
+
+// Pick pins & baud for your wiring
+static const int UART2_RX_PIN = 16;
+static const int UART2_TX_PIN = 17;
+static const uint32_t UART_BAUD = 230400; // can raise later if link is clean
+
+
+
 /////////////////////////////////////////////////////////utility functions////////////////////////////////////////////////////
 
 // Inline for performance-critical function
@@ -128,6 +139,68 @@ inline void advanceAfterDecode(unsigned long now) {
     }
 }
 
+
+static inline uint8_t xor_checksum(const uint8_t* p, size_t n) {
+  uint8_t x = 0;
+  for (size_t i = 0; i < n; ++i) x ^= p[i];
+  return x;
+}
+
+#pragma pack(push,1)
+// All primary values as IEEE-754 float (little-endian on ESP32)
+struct PayloadF {
+  uint8_t seq;          // increments each packet
+  float   rpm;          // from g_sensors[IDX_RPM]
+  float   hv_current_A; // can be negative
+  float   hv_voltage_V;
+  float   ect_C;
+  float   hv_intake_C;
+  float   tb1_C;
+  float   tb2_C;
+  float   tb3_C;
+  float   soc_pct;
+  int8_t  ebar;         // already small int
+  uint8_t est;          // state_energy_drain
+};
+#pragma pack(pop)
+
+static uint8_t tx_seq = 0;
+
+void initDisplayUart() {
+  DISP.begin(UART_BAUD, SERIAL_8N1, UART2_RX_PIN, UART2_TX_PIN);
+}
+
+void sendSensorsFloat() {
+  PayloadF pl{};
+  pl.seq          = tx_seq++;
+  pl.rpm          = g_sensors[IDX_RPM];
+  pl.hv_current_A = g_sensors[IDX_HV_CURRENT];
+  pl.hv_voltage_V = g_sensors[IDX_HV_VOLTAGE];
+  pl.ect_C        = g_sensors[IDX_ECT];
+  pl.hv_intake_C  = g_sensors[IDX_HV_INTAKE_C];
+  pl.tb1_C        = g_sensors[IDX_HV_TB1_C];
+  pl.tb2_C        = g_sensors[IDX_HV_TB2_C];
+  pl.tb3_C        = g_sensors[IDX_HV_TB3_C];
+  pl.soc_pct      = g_sensors[8];
+  pl.ebar         = (int8_t)g_sensors[9];
+  pl.est          = (uint8_t)g_sensors[10];
+
+  const uint8_t* p = reinterpret_cast<const uint8_t*>(&pl);
+  const uint8_t  n = (uint8_t)sizeof(PayloadF);
+  const uint8_t  csum = xor_checksum(p, n);
+
+  // Non-blocking guard: [start][len][payload][checksum]
+  const int need = 1 + 1 + n + 1;
+  if (DISP.availableForWrite() < need) return;
+
+  DISP.write((uint8_t)0xAA);
+  DISP.write(n);
+  DISP.write(p, n);
+  DISP.write(csum);
+
+//   Serial.print("Sent to display");
+}
+
 ////////////////////////////////////////////////////////////setup//////////////////////////////////////////////////////////
 void setup() {
     Serial.begin(115200);
@@ -145,6 +218,8 @@ void setup() {
     // Pre-configure the polling frame to avoid repeated setup
     txFrame.extended = false;
     txFrame.rtr = false;
+
+    initDisplayUart();
 }
 
 ////////////////////////////////////////////////////////////main loop//////////////////////////////////////////////////////////
@@ -364,6 +439,8 @@ void loop() {
         Serial.print("Ebar: "); Serial.print(g_sensors[9]); Serial.print("  ");
         Serial.print("ES: "); Serial.print(g_sensors[10]); Serial.print("  ");
         Serial.println();
+
+        sendSensorsFloat();
 
 
 

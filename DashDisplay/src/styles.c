@@ -62,6 +62,7 @@ void init_style_text_readable_MAIN_DEFAULT(lv_style_t *style) {
     lv_style_set_bg_opa(style, 50);
     lv_style_set_pad_left(style, 4);
     lv_style_set_pad_right(style, 4);
+    lv_style_set_radius(style, 10);
 };
 
 lv_style_t *get_style_text_readable_MAIN_DEFAULT() {
