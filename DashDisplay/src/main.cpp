@@ -399,7 +399,7 @@ void loop() {
         lv_bar_set_start_value(objects.kw_watts_bar, -20000, LV_ANIM_OFF);
         lv_bar_set_value(objects.kw_watts_bar, (watts - 20000), LV_ANIM_OFF);
         // lv_style_set_bg_color(objects.kw_watts_bar, lv_color_hex(0x00ff26), LV_PART_INDICATOR);
-        lv_obj_add_style(objects.kw_watts_bar, &style_kw_green, LV_PART_INDICATOR);
+        // lv_obj_add_style(objects.kw_watts_bar, &style_kw_green, LV_PART_INDICATOR);
 
 
       } else {
@@ -407,7 +407,7 @@ void loop() {
         lv_bar_set_value(objects.kw_watts_bar, 20000, LV_ANIM_OFF);
         lv_bar_set_start_value(objects.kw_watts_bar, (watts + 20000), LV_ANIM_OFF);
         // lv_style_set_bg_color(objects.kw_watts_bar, lv_color_hex(0x33F7FF), LV_PART_INDICATOR);
-        lv_obj_add_style(objects.kw_watts_bar, &style_kw_blue, LV_PART_INDICATOR);
+        // lv_obj_add_style(objects.kw_watts_bar, &style_kw_blue, LV_PART_INDICATOR);
       }
 
       // label it in kW though
