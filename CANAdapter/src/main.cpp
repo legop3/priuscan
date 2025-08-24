@@ -98,6 +98,12 @@ void sendSensorRequest(uint8_t sensorNum) {
             sendCANFrame(0x7E2, req, 8);
             break;
         }
+        case 5: {
+            // HV battery fan mode
+            uint8_t req[] = {0x02, 0x21, 0x9B, 0x00, 0x00, 0x00, 0x00, 0x00};
+            sendCANFrame(0x7E2, req, 8);
+            break;
+        }
     }
 }
 
@@ -105,6 +111,7 @@ void sendSensorRequest(uint8_t sensorNum) {
 // Timing control for polling
 unsigned long lastPollTime = 0;
 const unsigned long POLL_INTERVAL = 100; // Poll every 100ms
+uint8_t fanOverrideEnable = 0;
 
 // Sensor polling stuff
 volatile float g_sensors[20] = {0}; // All sensor values
@@ -112,7 +119,7 @@ uint8_t sensor_num = 0;             // Which sensor we're on (0,1,2,3,4...)
 bool waiting = false;               // Are we waiting for a response?
 unsigned long requestTimeout = 0;   // When we sent the last request
 const unsigned long TIMEOUT_MS = 300; // a little more slack for multi-frame
-int num_polling_sensors = 5; // number of sensors that get polled
+int num_polling_sensors = 6; // number of sensors that get polled
 
 // g_sensors indexes
 enum {
@@ -124,6 +131,7 @@ enum {
   IDX_HV_TB1_C = 5,
   IDX_HV_TB2_C = 6,
   IDX_HV_TB3_C = 7,
+  IDX_BFS = 11
 };
 
 // advance only after a successful decode
@@ -170,36 +178,48 @@ void initDisplayUart() {
   DISP.begin(UART_BAUD, SERIAL_8N1, UART2_RX_PIN, UART2_TX_PIN);
 }
 
+static inline void wr_f32(uint8_t *dst, float v) { memcpy(dst, &v, 4); }
+
 void sendSensorsFloat() {
-  PayloadF pl{};
-  pl.seq          = tx_seq++;
-  pl.rpm          = g_sensors[IDX_RPM];
-  pl.hv_current_A = g_sensors[IDX_HV_CURRENT];
-  pl.hv_voltage_V = g_sensors[IDX_HV_VOLTAGE];
-  pl.ect_C        = g_sensors[IDX_ECT];
-  pl.hv_intake_C  = g_sensors[IDX_HV_INTAKE_C];
-  pl.tb1_C        = g_sensors[IDX_HV_TB1_C];
-  pl.tb2_C        = g_sensors[IDX_HV_TB2_C];
-  pl.tb3_C        = g_sensors[IDX_HV_TB3_C];
-  pl.soc_pct      = g_sensors[8];
-  pl.ebar         = (int8_t)g_sensors[9];
-  pl.est          = (uint8_t)g_sensors[10];
+    const uint8_t n = 41;                 // payload length (bytes)
+    const int need = 1 + 1 + n + 1;       // [0xAA][len][payload][csum]
+    if (DISP.availableForWrite() < need) return;
 
-  const uint8_t* p = reinterpret_cast<const uint8_t*>(&pl);
-  const uint8_t  n = (uint8_t)sizeof(PayloadF);
-  const uint8_t  csum = xor_checksum(p, n);
+    uint8_t buf[1 + 1 + 41 + 1];          // <-- or: uint8_t buf[1 + 1 + n + 1];
+    size_t o = 0;
 
-  // Non-blocking guard: [start][len][payload][checksum]
-  const int need = 1 + 1 + n + 1;
-  if (DISP.availableForWrite() < need) return;
+    buf[o++] = 0xAA;
+    buf[o++] = n;
 
-  DISP.write((uint8_t)0xAA);
-  DISP.write(n);
-  DISP.write(p, n);
-  DISP.write(csum);
+    buf[o++] = tx_seq++;
 
-//   Serial.print("Sent to display");
+    wr_f32(&buf[o], g_sensors[IDX_RPM]);         o += 4;
+    wr_f32(&buf[o], g_sensors[IDX_HV_CURRENT]);  o += 4;
+    wr_f32(&buf[o], g_sensors[IDX_HV_VOLTAGE]);  o += 4;
+    wr_f32(&buf[o], g_sensors[IDX_ECT]);         o += 4;
+    wr_f32(&buf[o], g_sensors[IDX_HV_INTAKE_C]); o += 4;
+    wr_f32(&buf[o], g_sensors[IDX_HV_TB1_C]);    o += 4;
+    wr_f32(&buf[o], g_sensors[IDX_HV_TB2_C]);    o += 4;
+    wr_f32(&buf[o], g_sensors[IDX_HV_TB3_C]);    o += 4;
+    wr_f32(&buf[o], g_sensors[8]);               o += 4;  // soc_pct
+
+    buf[o++] = (int8_t)g_sensors[9];             // ebar
+    buf[o++] = (uint8_t)g_sensors[10];           // est
+
+    // NEW: fan speed + override flag (bytes 39, 40)
+    buf[o++] = (uint8_t)g_sensors[IDX_BFS];      // fan speed 0..6
+    buf[o++] = fanOverrideEnable ? 1 : 0;     // 0/1  (make sure this is a bool var)
+
+    uint8_t csum = xor_checksum(&buf[2], n);     // XOR over payload only
+    buf[o++] = csum;
+
+    // (Optional safety during bring-up)
+    // if (o != (size_t)(1 + 1 + n + 1)) { Serial.printf("PACK LEN BUG: o=%u exp=%u\n", (unsigned)o, 1+1+n+1); }
+
+    DISP.write(buf, o);
 }
+
+
 
 ////////////////////////////////////////////////////////////setup//////////////////////////////////////////////////////////
 void setup() {
@@ -253,6 +273,11 @@ void loop() {
 
     // STEP 3: Process CAN messages
     if (CAN0.read(can_message)) {
+
+        // force battery fan on
+        // sendCANFrame(0x7E2, {0x06,0x30,0x81,0x06,0x06,6,0x00,0x00});
+
+
         switch (can_message.id) {
 
             // Engine RPM (non-polled)
@@ -412,6 +437,53 @@ void loop() {
                             }
                             break;
                         }
+                        
+                        // ---------------------- HV battery fan mode (21 9B) ----------------------
+                        case 5: {
+                            bool decoded = false;
+                            uint8_t mode = 0xFF;  // invalid placeholder
+
+                            // We’re in 0x7EA and waiting==true already
+                            // pciType & seq are computed above
+
+                            //print this entire frame for debugging
+                            // for(int i=0; i<can_message.length; i++) {
+                            //     Serial.print(can_message.data.byte[i], HEX);
+                            //     Serial.print(" ");
+                            // }
+                            // Serial.println();
+                            
+
+                            // Single Frame: [00 len][61][9B][A][B]...
+                            if (pciType == 0x00 /*SF*/ && b[1] == 0x61 && b[2] == 0x9B) {
+                                if (can_message.length >= 5) {          // need A and B present
+                                    mode = b[4];                        // B = second byte after 61 9B
+                                    decoded = true;
+                                }
+                            }
+
+                            // First Frame: [10 xx][61][9B][A][B]...
+                            if (pciType == 0x10 /*FF*/ && b[2] == 0x61 && b[3] == 0x9B) {
+                                if (can_message.length >= 6) {          // A at b[4], B at b[5]
+                                    mode = b[5];
+                                    decoded = true;
+                                    // No Flow Control needed: we already have byte B in the FF
+                                }
+                            }
+
+                            // (Ignore CFs — we don’t need them for byte B)
+
+                            if (decoded) {
+                                if (mode <= 6) {
+                                    g_sensors[11] = mode;               // pick free slot for BFS
+                                } else {
+                                    g_sensors[11] = 0;                  // clamp/guard if odd value
+                                }
+                                advanceAfterDecode(currentTime);
+                            }
+                            break;
+                        }
+
 
 
                     }
@@ -424,27 +496,39 @@ void loop() {
         }
     }
 
+    // fan override every 2 seconds if enabled
+    static unsigned long lastFanOverrideTime = 0;
+    if (currentTime - lastFanOverrideTime >= 2000) {
+        if(fanOverrideEnable == 1) {
+            // force battery fan on
+            sendCANFrame(0x7E2, {0x06,0x30,0x81,0x06,0x06,6,0x00,0x00});
+        }
+        lastFanOverrideTime = currentTime;
+    }
+
+
+
     // STEP 4: Serial output
     static unsigned long lastPrintTime = 0;
-    if (currentTime - lastPrintTime >= 100) {
-        Serial.print("RPM: " + String(g_sensors[0]) + " ");
-        Serial.print("Bat I: " + String(g_sensors[1], 2) + "A ");
-        Serial.print("Bat V: " + String(g_sensors[2], 1) + "V ");
-        Serial.print("Coolant: " + String(g_sensors[3], 1) + "C ");
-        Serial.print("HV Intake: "); Serial.print(g_sensors[IDX_HV_INTAKE_C], 1); Serial.print("C ");
-        Serial.print("TB1: "); Serial.print(g_sensors[IDX_HV_TB1_C], 1); Serial.print("C ");
-        Serial.print("TB2: "); Serial.print(g_sensors[IDX_HV_TB2_C], 1); Serial.print("C ");
-        Serial.print("TB3: "); Serial.print(g_sensors[IDX_HV_TB3_C], 1); Serial.print("C ");
-        Serial.print("SOC: "); Serial.print(g_sensors[8], 1); Serial.print("% ");
-        Serial.print("Ebar: "); Serial.print(g_sensors[9]); Serial.print("  ");
-        Serial.print("ES: "); Serial.print(g_sensors[10]); Serial.print("  ");
+    if (currentTime - lastPrintTime >= 50) {
+        Serial.print(F("RPM: "));       Serial.print(g_sensors[IDX_RPM]);            Serial.print(' ');
+        Serial.print(F("Bat I: "));     Serial.print(g_sensors[IDX_HV_CURRENT], 2);  Serial.print(F("A "));
+        Serial.print(F("Bat V: "));     Serial.print(g_sensors[IDX_HV_VOLTAGE], 1);  Serial.print(F("V "));
+        Serial.print(F("Coolant: "));   Serial.print(g_sensors[IDX_ECT], 1);         Serial.print(F("C "));
+        Serial.print(F("HV Intake: ")); Serial.print(g_sensors[IDX_HV_INTAKE_C], 1); Serial.print(F("C "));
+        Serial.print(F("TB1: "));       Serial.print(g_sensors[IDX_HV_TB1_C], 1);    Serial.print(F("C "));
+        Serial.print(F("TB2: "));       Serial.print(g_sensors[IDX_HV_TB2_C], 1);    Serial.print(F("C "));
+        Serial.print(F("TB3: "));       Serial.print(g_sensors[IDX_HV_TB3_C], 1);    Serial.print(F("C "));
+        Serial.print(F("SOC: "));       Serial.print(g_sensors[8], 1);               Serial.print(F("% "));
+        Serial.print(F("Ebar: "));      Serial.print((int)g_sensors[9]);             Serial.print(F("  "));
+        Serial.print(F("ES: "));        Serial.print((int)g_sensors[10]);            Serial.print(F("  "));
+        // If you add BFS later:
+        Serial.print(F("BFS: "));     Serial.print((int)g_sensors[11]);            Serial.print(F("  "));
         Serial.println();
 
+        // sendCANFrame(0x7E2, {0x06,0x30,0x81,0x06,0x06,6,0x00,0x00});
+
         sendSensorsFloat();
-
-
-
-
         lastPrintTime = currentTime;
     }
 }

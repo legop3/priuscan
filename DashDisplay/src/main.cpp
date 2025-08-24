@@ -70,6 +70,8 @@ struct PayloadF {
   float   soc_pct;
   int8_t  ebar;
   uint8_t est;
+  uint8_t bfs;
+  uint8_t bfor;
 };
 #pragma pack(pop)
 
@@ -489,6 +491,17 @@ void loop() {
       }
       
 
+      // change battery fan speed and control LED
+      int bfs = (int)roundf(lastPacket.bfs);
+      // lv_label_set_text(objects.battery_fan_speed, bfs);
+      lv_label_set_text_fmt(objects.battery_fan_speed, "%d", bfs);
+      if (lastPacket.bfor) {
+        lv_obj_set_style_bg_color(objects.battery_fan_control, g_green, LV_PART_MAIN);
+        lv_obj_set_style_opa(objects.battery_fan_control, LV_OPA_COVER, LV_PART_MAIN);
+      } else {
+        lv_obj_set_style_bg_color(objects.battery_fan_control, g_red, LV_PART_MAIN);
+        lv_obj_set_style_opa(objects.battery_fan_control, LV_OPA_COVER, LV_PART_MAIN);
+      }
 
 
 
