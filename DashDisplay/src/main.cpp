@@ -370,8 +370,8 @@ void setup() {
 // define colors ahead of time, for consistency
 lv_color_t g_green = lv_color_hex(0x00ff26);
 lv_color_t g_blue = lv_color_hex(0x00ffff);
-lv_color_t g_orange = lv_color_hex(0xffa000);
-lv_color_t g_red = lv_color_hex(0xFF2B2B);
+lv_color_t g_orange = lv_color_hex(0xFCA200);
+lv_color_t g_red = lv_color_hex(0xFD0000);
 lv_color_t g_yellow = lv_color_hex(0xE9E800);
 
 
@@ -496,11 +496,15 @@ void loop() {
       // lv_label_set_text(objects.battery_fan_speed, bfs);
       lv_label_set_text_fmt(objects.battery_fan_speed, "%d", bfs);
       if (lastPacket.bfor) {
-        lv_obj_set_style_bg_color(objects.battery_fan_control, g_green, LV_PART_MAIN);
-        lv_obj_set_style_opa(objects.battery_fan_control, LV_OPA_COVER, LV_PART_MAIN);
+        // lv_obj_set_style_bg_color(objects.battery_fan_control, g_green, LV_PART_MAIN);
+        // lv_obj_set_style_opa(objects.battery_fan_control, LV_OPA_COVER, LV_PART_MAIN);
+        Serial.println("turning fan LED on");
+        lv_led_on(objects.battery_fan_control);
       } else {
-        lv_obj_set_style_bg_color(objects.battery_fan_control, g_red, LV_PART_MAIN);
-        lv_obj_set_style_opa(objects.battery_fan_control, LV_OPA_COVER, LV_PART_MAIN);
+        // lv_obj_set_style_bg_color(objects.battery_fan_control, g_red, LV_PART_MAIN);
+        // lv_obj_set_style_opa(objects.battery_fan_control, LV_OPA_COVER, LV_PART_MAIN);
+        Serial.println("turning fan LED off");
+        lv_led_off(objects.battery_fan_control);
       }
 
 

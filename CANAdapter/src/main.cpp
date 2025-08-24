@@ -498,6 +498,14 @@ void loop() {
 
     // fan override every 2 seconds if enabled
     static unsigned long lastFanOverrideTime = 0;
+
+    // if any battery temp is over 37c, enable fan override
+    if(g_sensors[IDX_HV_TB1_C] > 37.0 || g_sensors[IDX_HV_TB2_C] > 37.0 || g_sensors[IDX_HV_TB3_C] > 37.0) {
+        fanOverrideEnable = 1;
+    } else {
+        fanOverrideEnable = 0;
+    }
+
     if (currentTime - lastFanOverrideTime >= 2000) {
         if(fanOverrideEnable == 1) {
             // force battery fan on

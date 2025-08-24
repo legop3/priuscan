@@ -20,6 +20,10 @@ typedef struct _objects_t {
     lv_obj_t *battery_intake_temp;
     lv_obj_t *battery_fan_speed;
     lv_obj_t *battery_fan_control;
+    lv_obj_t *obj0;
+    lv_obj_t *bt1;
+    lv_obj_t *bt1_1;
+    lv_obj_t *bt1_2;
 } objects_t;
 
 extern objects_t objects;

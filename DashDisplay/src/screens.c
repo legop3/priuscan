@@ -169,8 +169,9 @@ void create_screen_main() {
                     objects.battery_fan_control = obj;
                     lv_obj_set_pos(obj, -4, 6);
                     lv_obj_set_size(obj, 53, 52);
-                    lv_led_set_color(obj, lv_color_hex(0xffff0000));
+                    lv_led_set_color(obj, lv_color_hex(0xff1900ff));
                     lv_led_set_brightness(obj, 255);
+                    lv_obj_clear_flag(obj, LV_OBJ_FLAG_CLICKABLE);
                     lv_obj_set_style_shadow_width(obj, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
                     lv_obj_set_style_align(obj, LV_ALIGN_BOTTOM_LEFT, LV_PART_MAIN | LV_STATE_DEFAULT);
                 }
@@ -191,6 +192,65 @@ void create_screen_main() {
             add_style_text_readable(obj);
             lv_obj_set_style_text_font(obj, &lv_font_montserrat_28, LV_PART_MAIN | LV_STATE_DEFAULT);
             lv_label_set_text(obj, "Battery Fan\nStatus");
+        }
+        {
+            lv_obj_t *obj = lv_obj_create(parent_obj);
+            lv_obj_set_pos(obj, 0, 271);
+            lv_obj_set_size(obj, 512, 209);
+            add_style_panel_crisp(obj);
+            lv_obj_set_style_bg_opa(obj, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+            {
+                lv_obj_t *parent_obj = obj;
+                {
+                    lv_obj_t *obj = lv_obj_create(parent_obj);
+                    objects.obj0 = obj;
+                    lv_obj_set_pos(obj, 1, -20);
+                    lv_obj_set_size(obj, 195, 166);
+                    lv_obj_clear_flag(obj, LV_OBJ_FLAG_CLICKABLE|LV_OBJ_FLAG_SCROLLABLE);
+                    add_style_panel_crisp(obj);
+                    lv_obj_set_style_bg_color(obj, lv_color_hex(0xff618cd6), LV_PART_MAIN | LV_STATE_DEFAULT);
+                    {
+                        lv_obj_t *parent_obj = obj;
+                        {
+                            lv_obj_t *obj = lv_label_create(parent_obj);
+                            lv_obj_set_pos(obj, -12, -12);
+                            lv_obj_set_size(obj, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+                            add_style_text_readable(obj);
+                            lv_label_set_text(obj, "Battery Temperatures:");
+                        }
+                        {
+                            // bt1
+                            lv_obj_t *obj = lv_label_create(parent_obj);
+                            objects.bt1 = obj;
+                            lv_obj_set_pos(obj, -12, 11);
+                            lv_obj_set_size(obj, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+                            add_style_text_readable(obj);
+                            lv_obj_set_style_text_font(obj, &lv_font_montserrat_32, LV_PART_MAIN | LV_STATE_DEFAULT);
+                            lv_label_set_text(obj, "17.3°");
+                        }
+                        {
+                            // bt1_1
+                            lv_obj_t *obj = lv_label_create(parent_obj);
+                            objects.bt1_1 = obj;
+                            lv_obj_set_pos(obj, -12, 57);
+                            lv_obj_set_size(obj, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+                            add_style_text_readable(obj);
+                            lv_obj_set_style_text_font(obj, &lv_font_montserrat_32, LV_PART_MAIN | LV_STATE_DEFAULT);
+                            lv_label_set_text(obj, "1.3°");
+                        }
+                        {
+                            // bt1_2
+                            lv_obj_t *obj = lv_label_create(parent_obj);
+                            objects.bt1_2 = obj;
+                            lv_obj_set_pos(obj, -12, 101);
+                            lv_obj_set_size(obj, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+                            add_style_text_readable(obj);
+                            lv_obj_set_style_text_font(obj, &lv_font_montserrat_32, LV_PART_MAIN | LV_STATE_DEFAULT);
+                            lv_label_set_text(obj, "207.3°");
+                        }
+                    }
+                }
+            }
         }
     }
     
