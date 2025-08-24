@@ -1,6 +1,8 @@
 {
   "navigation": {
     "selectedUserPageObject": "[DashDisplayEEZ.eez-project]:/userPages/0",
+    "selectedUserWidgetObject": "[DashDisplayEEZ.eez-project]:/userWidgets/-1",
+    "selectedStyleObject": "[DashDisplayEEZ.eez-project]:/lvglStyles/styles/1",
     "subnavigationSelectedItems": {}
   },
   "layoutModel": {
@@ -21,6 +23,7 @@
           },
           {
             "type": "border",
+            "selected": 0,
             "size": 240,
             "location": "right",
             "children": [
@@ -185,7 +188,7 @@
             {
               "type": "tabset",
               "id": "EDITORS",
-              "weight": 65,
+              "weight": 51.087115666178626,
               "selected": 1,
               "enableDeleteWhenEmpty": false,
               "enableClose": false,
@@ -219,7 +222,7 @@
             {
               "type": "row",
               "id": "#393ef3a8-535f-4656-a388-4ca30ff6ef41",
-              "weight": 20,
+              "weight": 33.912884333821374,
               "children": [
                 {
                   "type": "tabset",
@@ -782,7 +785,8 @@
                       "component": "styles",
                       "enableClose": false
                     }
-                  ]
+                  ],
+                  "active": true
                 },
                 {
                   "type": "tabset",
@@ -994,9 +998,7 @@
     "[DashDisplayEEZ.eez-project]:/userPages/0[flow-state]": {
       "selection": {
         "0": {
-          "1": {
-            "$selected": true
-          }
+          "2": {}
         }
       },
       "transform": {
@@ -1012,6 +1014,30 @@
         "secondToPx": 200,
         "scrollLeft": 0
       }
+    },
+    "[DashDisplayEEZ.eez-project]:/userWidgets/0[flow-state]": {
+      "selection": {},
+      "transform": {
+        "translate": {
+          "x": -400,
+          "y": -240
+        },
+        "scale": 1
+      },
+      "timeline": {
+        "isEditorActive": false,
+        "position": 0,
+        "secondToPx": 200,
+        "scrollLeft": 0
+      }
+    },
+    "[DashDisplayEEZ.eez-project]:/lvglStyles/styles[tree-state]": {
+      "1": {
+        "$selected": true
+      },
+      "2": {
+        "$selected": true
+      }
     }
   },
   "activeOutputSection": 0,
@@ -1026,9 +1052,17 @@
   "showComponentDescriptions": true,
   "logsPanelFilter": "all",
   "selectedStylePropertyName": "",
-  "lvglPart": "MAIN",
+  "lvglPart": "INDICATOR",
   "lvglState": "DEFAULT",
-  "lvglExpandedPropertiesGroup": [],
+  "lvglExpandedPropertiesGroup": [
+    "TEXT",
+    "PADDING",
+    "BORDER",
+    "OUTLINE",
+    "SHADOW",
+    "MISCELLANEOUS",
+    "POSITION AND SIZE"
+  ],
   "showInactiveFlowsInDebugger": true,
   "globalFlowZoom": true,
   "flowZoom": 1,
