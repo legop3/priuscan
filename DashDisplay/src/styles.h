@@ -18,6 +18,11 @@ lv_style_t *get_style_text_readable_MAIN_DEFAULT();
 void add_style_text_readable(lv_obj_t *obj);
 void remove_style_text_readable(lv_obj_t *obj);
 
+// Style: panel crisp
+lv_style_t *get_style_panel_crisp_MAIN_DEFAULT();
+void add_style_panel_crisp(lv_obj_t *obj);
+void remove_style_panel_crisp(lv_obj_t *obj);
+
 
 
 #ifdef __cplusplus

@@ -23,6 +23,7 @@ extern "C" {
 #endif
 #include "ui.h"
 #include "screens.h"
+// #include "styles.h"
 #ifdef __cplusplus
 }
 #endif
@@ -186,14 +187,14 @@ public:
 
       // Keep your proven baseline timings at higher PCLK (tighten later if clean)
       cfg.hsync_polarity    = 1;
-      cfg.hsync_front_porch = 4;
-      cfg.hsync_pulse_width = 4;
-      cfg.hsync_back_porch  = 20;
+      cfg.hsync_front_porch = 40;
+      cfg.hsync_pulse_width = 48;
+      cfg.hsync_back_porch  = 40;
 
       cfg.vsync_polarity    = 1;
-      cfg.vsync_front_porch = 4;
-      cfg.vsync_pulse_width = 4;
-      cfg.vsync_back_porch  = 20;
+      cfg.vsync_front_porch = 13;
+      cfg.vsync_pulse_width = 1;
+      cfg.vsync_back_porch  = 31;
 
       _bus_instance.config(cfg);
     }
@@ -291,6 +292,11 @@ static void inspect_active_screen() {
   }
 }
 
+inline float c_to_f(float c) {
+    return (c * 9.0f / 5.0f) + 32.0f;
+}
+
+
 // ──────────────────────────────────────────────────────────────
 // SETUP / LOOP
 // ──────────────────────────────────────────────────────────────
@@ -308,11 +314,15 @@ void setup() {
   // Strengthen drive BEFORE lcd.begin()
   set_rgb_drive_strength();
 
+  lcd.setRotation(2);
   lcd.begin();
-  // lcd.setRotation(3);
   pinMode(GFX_BL, OUTPUT);
   digitalWrite(GFX_BL, HIGH);
+  // lcd.fillRect(0, 0, 240, 240, 0x07E0 /* pure green in RGB565 */);
+  // delay(300);
+  // lcd.clear();
 
+  // delay(1000);
   lv_init();
 
   screenWidth  = lcd.width();
@@ -351,19 +361,16 @@ void setup() {
   // float fps = (float)PCLK_HZ / (float)(Htot * Vtot);
   // Serial.printf("Timing: PCLK=%lu Hz, Htot=%lu, Vtot=%lu -> FPS≈%.2f\n",
   //               (unsigned long)PCLK_HZ, (unsigned long)Htot, (unsigned long)Vtot, fps);
+
+
 }
 
-// static colors for kW bar:
-// static lv_style_t style_kw_green;
-// static lv_style_t style_kw_blue;
-
-// lv_style_init(&style_kw_green);
-// lv_style_set_bg_color(&style_kw_green, lv_color_hex(0x00ff26));
-// lv_style_set_opa(&style_kw_green, LV_OPA_COVER);
-
-// lv_style_init(&style_kw_blue);
-// lv_style_set_bg_color(&style_kw_blue, lv_color_hex(0x33F7FF));
-// lv_style_set_opa(&style_kw_blue, LV_OPA_COVER);
+// define colors ahead of time, for consistency
+lv_color_t g_green = lv_color_hex(0x00ff26);
+lv_color_t g_blue = lv_color_hex(0x00ffff);
+lv_color_t g_orange = lv_color_hex(0xffa000);
+lv_color_t g_red = lv_color_hex(0xFF2B2B);
+lv_color_t g_yellow = lv_color_hex(0xE9E800);
 
 
 void loop() {
@@ -383,39 +390,104 @@ void loop() {
 
     if (fresh) {
 
+
       // RPM bar
       int rpm_val = (int)roundf(lastPacket.rpm);
       rpm_val = constrain(rpm_val, 0, 100000); // guard
       lv_bar_set_value(objects.rpm_bar, rpm_val, LV_ANIM_OFF);
       lv_label_set_text_fmt(objects.rpm_label, "%d\nRPM", rpm_val);
 
+
       // Watts bar
       int watts = round((lastPacket.hv_voltage_V * lastPacket.hv_current_A));
-      // Serial.println("Watts: " + String(watts));
-
       // change direction of meter based on watts in (negative) or watts out (positive)
       if(watts >= 0) {
-        // if watts out start bar from bottom, change color
+        // if watts out start bar from bottom, change color to green
         lv_bar_set_start_value(objects.kw_watts_bar, -20000, LV_ANIM_OFF);
         lv_bar_set_value(objects.kw_watts_bar, (watts - 20000), LV_ANIM_OFF);
-        // lv_style_set_bg_color(objects.kw_watts_bar, lv_color_hex(0x00ff26), LV_PART_INDICATOR);
-        // lv_obj_add_style(objects.kw_watts_bar, &style_kw_green, LV_PART_INDICATOR);
-
-
+        lv_obj_set_style_bg_color(objects.kw_watts_bar, lv_color_hex(0x00ff26), LV_PART_INDICATOR);
+        lv_obj_set_style_opa(objects.kw_watts_bar, LV_OPA_COVER, LV_PART_INDICATOR);
       } else {
-        // if watts in start bar from top, change color
+        // if watts in start bar from top, change color to blue
         lv_bar_set_value(objects.kw_watts_bar, 20000, LV_ANIM_OFF);
         lv_bar_set_start_value(objects.kw_watts_bar, (watts + 20000), LV_ANIM_OFF);
-        // lv_style_set_bg_color(objects.kw_watts_bar, lv_color_hex(0x33F7FF), LV_PART_INDICATOR);
-        // lv_obj_add_style(objects.kw_watts_bar, &style_kw_blue, LV_PART_INDICATOR);
+        lv_obj_set_style_bg_color(objects.kw_watts_bar, lv_color_hex(0x00ffff), LV_PART_INDICATOR);
+        lv_obj_set_style_opa(objects.kw_watts_bar, LV_OPA_COVER, LV_PART_INDICATOR);
       }
-
       // label it in kW though
       float kW = (watts / 1000.0f);
       char kw_buf[16];
       snprintf(kw_buf, sizeof(kw_buf), "%.2f\nkW", kW);
       lv_label_set_text(objects.kw_label, kw_buf);
-      // lv_label_set_text_fmt(objects.kw_label, "%.2f\nkW", kW);
+
+
+      // battery soc and temp panel
+      int battery_soc_rnd = (int)roundf(lastPacket.soc_pct);
+      // Serial.println("battery soc" + String(battery_soc));
+      lv_label_set_text_fmt(objects.battery_soc, "%d%%\nSoC", battery_soc_rnd);
+      // set backround of objects.battery_info_panel based on soc:
+      if (battery_soc_rnd < 45) {
+        lv_obj_set_style_bg_color(objects.battery_info_panel, g_red, LV_PART_MAIN);
+        lv_obj_set_style_opa(objects.battery_info_panel, LV_OPA_COVER, LV_PART_MAIN);
+      } else if (battery_soc_rnd < 50) {
+        lv_obj_set_style_bg_color(objects.battery_info_panel, g_orange, LV_PART_MAIN);
+        lv_obj_set_style_opa(objects.battery_info_panel, LV_OPA_COVER, LV_PART_MAIN);
+      } else if (battery_soc_rnd < 60) {
+        lv_obj_set_style_bg_color(objects.battery_info_panel, g_yellow, LV_PART_MAIN);
+        lv_obj_set_style_opa(objects.battery_info_panel, LV_OPA_COVER, LV_PART_MAIN);
+      } else {
+        lv_obj_set_style_bg_color(objects.battery_info_panel, g_blue, LV_PART_MAIN);
+        lv_obj_set_style_opa(objects.battery_info_panel, LV_OPA_COVER, LV_PART_MAIN);
+      }
+
+
+      // temp
+      // average battery temps into one number
+      float battery_temp_avg = (lastPacket.tb1_C + lastPacket.tb2_C + lastPacket.tb3_C) / 3.0f;
+      // Serial.println("battery temp avg: " + String(battery_temp_avg, 2));
+      float battery_temp_f = c_to_f(battery_temp_avg);
+      int battery_temp_f_round = (int)roundf(battery_temp_f);
+      lv_label_set_text_fmt(objects.battery_temp, "%d°", battery_temp_f_round);
+      // set color based on temp in F:
+      if (battery_temp_f < 60) {
+        lv_obj_set_style_bg_color(objects.battery_temp, g_blue, LV_PART_MAIN);
+        lv_obj_set_style_opa(objects.battery_temp, LV_OPA_COVER, LV_PART_MAIN);
+      } else if (battery_temp_f < 80) {
+        lv_obj_set_style_bg_color(objects.battery_temp, g_green, LV_PART_MAIN);
+        lv_obj_set_style_opa(objects.battery_temp, LV_OPA_COVER, LV_PART_MAIN);
+      } else if (battery_temp_f < 90) {
+        lv_obj_set_style_bg_color(objects.battery_temp, g_yellow, LV_PART_MAIN);
+        lv_obj_set_style_opa(objects.battery_temp, LV_OPA_COVER, LV_PART_MAIN);
+      } else if (battery_temp_f < 100) {
+        lv_obj_set_style_bg_color(objects.battery_temp, g_orange, LV_PART_MAIN);
+        lv_obj_set_style_opa(objects.battery_temp, LV_OPA_COVER, LV_PART_MAIN);
+      } else {
+        lv_obj_set_style_bg_color(objects.battery_temp, g_red, LV_PART_MAIN);
+        lv_obj_set_style_opa(objects.battery_temp, LV_OPA_COVER, LV_PART_MAIN);
+      }
+
+      // battery fan info panel
+      float intake_temp_f = c_to_f(lastPacket.hv_intake_C);
+      int intake_temp_f_round = (int)roundf(intake_temp_f);
+      lv_label_set_text_fmt(objects.battery_intake_temp, "%d°", intake_temp_f_round);
+      // set color of panel based on intake temp in F:
+      if (intake_temp_f < 60) {
+        lv_obj_set_style_bg_color(objects.battery_fan_info_panel, g_blue, LV_PART_MAIN);
+        lv_obj_set_style_opa(objects.battery_fan_info_panel, LV_OPA_COVER, LV_PART_MAIN);
+      } else if (intake_temp_f < 80) {
+        lv_obj_set_style_bg_color(objects.battery_fan_info_panel, g_green, LV_PART_MAIN);
+        lv_obj_set_style_opa(objects.battery_fan_info_panel, LV_OPA_COVER, LV_PART_MAIN);
+      } else if (intake_temp_f < 90) {
+        lv_obj_set_style_bg_color(objects.battery_fan_info_panel, g_yellow, LV_PART_MAIN);
+        lv_obj_set_style_opa(objects.battery_fan_info_panel, LV_OPA_COVER, LV_PART_MAIN);
+      } else if (intake_temp_f < 100) {
+        lv_obj_set_style_bg_color(objects.battery_fan_info_panel, g_orange, LV_PART_MAIN);
+        lv_obj_set_style_opa(objects.battery_fan_info_panel, LV_OPA_COVER, LV_PART_MAIN);
+      } else {
+        lv_obj_set_style_bg_color(objects.battery_fan_info_panel, g_red, LV_PART_MAIN);
+        lv_obj_set_style_opa(objects.battery_fan_info_panel, LV_OPA_COVER, LV_PART_MAIN);
+      }
+      
 
 
 
