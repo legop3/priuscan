@@ -131,7 +131,9 @@ enum {
   IDX_HV_TB1_C = 5,
   IDX_HV_TB2_C = 6,
   IDX_HV_TB3_C = 7,
-  IDX_BFS = 11
+  IDX_BFS = 11,
+  IDX_DASH_BRIGHT = 12,
+  IDX_CAR_DIM = 13
 };
 
 // advance only after a successful decode
@@ -181,11 +183,11 @@ void initDisplayUart() {
 static inline void wr_f32(uint8_t *dst, float v) { memcpy(dst, &v, 4); }
 
 void sendSensorsFloat() {
-    const uint8_t n = 41;                 // payload length (bytes)
+    const uint8_t n = 42;                 // payload length (bytes)
     const int need = 1 + 1 + n + 1;       // [0xAA][len][payload][csum]
     if (DISP.availableForWrite() < need) return;
 
-    uint8_t buf[1 + 1 + 41 + 1];          // <-- or: uint8_t buf[1 + 1 + n + 1];
+    uint8_t buf[1 + 1 + 42 + 1];          // <-- or: uint8_t buf[1 + 1 + n + 1];
     size_t o = 0;
 
     buf[o++] = 0xAA;
@@ -209,6 +211,9 @@ void sendSensorsFloat() {
     // NEW: fan speed + override flag (bytes 39, 40)
     buf[o++] = (uint8_t)g_sensors[IDX_BFS];      // fan speed 0..6
     buf[o++] = fanOverrideEnable ? 1 : 0;     // 0/1  (make sure this is a bool var)
+
+    // car dim signal 
+    buf[o++] = g_sensors[IDX_CAR_DIM] ? 1 : 0;
 
     uint8_t csum = xor_checksum(&buf[2], n);     // XOR over payload only
     buf[o++] = csum;
@@ -307,6 +312,49 @@ void loop() {
                 // Serial.print("  STATE_ENERGYDRAIN="); Serial.println(state_energy_drain);
                 break;
             }
+
+            // dashboard brightness / dim state
+            case 0x620: {
+                const uint8_t *d = can_message.data.byte;
+
+                uint16_t als_raw = (uint16_t(d[2]) << 8) | d[3];   // D3<<8 | D4
+                bool car_dim_active = (d[4] & 0x40) != 0;          // D5 bit6
+
+                // Track observed range (or set fixed numbers you like)
+                static uint16_t als_min = 80;    // darkest seen
+                static uint16_t als_max = 600;   // brightest seen
+                if (als_raw < als_min) als_min = als_raw;
+                if (als_raw > als_max) als_max = als_raw;
+
+                // ---- INVERTED map: dark -> low %, bright -> high % ----
+                uint8_t ui_brightness_pct = 50;  // default
+                if (als_max > als_min) {
+                    uint16_t span = als_max - als_min;
+                    uint16_t pos  = (als_raw <= als_min) ? 0 : (als_raw - als_min > span ? span : als_raw - als_min);
+                    // invert here: 0..span -> 100..0
+                    int pct = (int)((span - pos) * 100L / span);
+
+                    // Optional floors so it's never too dim (different at night/day)
+                    const uint8_t floor_day = 25;    // min brightness with lights off
+                    const uint8_t floor_night = 5;   // min brightness with lights on
+                    const uint8_t floor_pct = car_dim_active ? floor_night : floor_day;
+                    if (pct < floor_pct) pct = floor_pct;
+
+                    // Optional: mild gamma to match eye response (comment out if you want pure linear)
+                    // float g = 1.3f; pct = (int)(powf(pct/100.0f, g)*100.0f + 0.5f);
+
+                    ui_brightness_pct = (uint8_t)pct;
+                }
+
+                // store/send as before
+                g_sensors[IDX_DASH_BRIGHT] = (float)ui_brightness_pct;   // percent for your display
+                g_sensors[IDX_CAR_DIM] = car_dim_active ? 1.0f : 0.0f;
+
+                // Serial.printf("ALS=%u -> %u%%  DIM=%d\n", als_raw, ui_brightness_pct, car_dim_active);
+                break;
+            }
+
+
 
 
             // Polled sensor responses
@@ -519,20 +567,21 @@ void loop() {
     // STEP 4: Serial output
     static unsigned long lastPrintTime = 0;
     if (currentTime - lastPrintTime >= 50) {
-        Serial.print(F("RPM: "));       Serial.print(g_sensors[IDX_RPM]);            Serial.print(' ');
-        Serial.print(F("Bat I: "));     Serial.print(g_sensors[IDX_HV_CURRENT], 2);  Serial.print(F("A "));
-        Serial.print(F("Bat V: "));     Serial.print(g_sensors[IDX_HV_VOLTAGE], 1);  Serial.print(F("V "));
-        Serial.print(F("Coolant: "));   Serial.print(g_sensors[IDX_ECT], 1);         Serial.print(F("C "));
-        Serial.print(F("HV Intake: ")); Serial.print(g_sensors[IDX_HV_INTAKE_C], 1); Serial.print(F("C "));
-        Serial.print(F("TB1: "));       Serial.print(g_sensors[IDX_HV_TB1_C], 1);    Serial.print(F("C "));
-        Serial.print(F("TB2: "));       Serial.print(g_sensors[IDX_HV_TB2_C], 1);    Serial.print(F("C "));
-        Serial.print(F("TB3: "));       Serial.print(g_sensors[IDX_HV_TB3_C], 1);    Serial.print(F("C "));
-        Serial.print(F("SOC: "));       Serial.print(g_sensors[8], 1);               Serial.print(F("% "));
-        Serial.print(F("Ebar: "));      Serial.print((int)g_sensors[9]);             Serial.print(F("  "));
-        Serial.print(F("ES: "));        Serial.print((int)g_sensors[10]);            Serial.print(F("  "));
-        // If you add BFS later:
-        Serial.print(F("BFS: "));     Serial.print((int)g_sensors[11]);            Serial.print(F("  "));
-        Serial.println();
+        // Serial.print(F("RPM: "));       Serial.print(g_sensors[IDX_RPM]);            Serial.print(' ');
+        // Serial.print(F("Bat I: "));     Serial.print(g_sensors[IDX_HV_CURRENT], 2);  Serial.print(F("A "));
+        // Serial.print(F("Bat V: "));     Serial.print(g_sensors[IDX_HV_VOLTAGE], 1);  Serial.print(F("V "));
+        // Serial.print(F("Coolant: "));   Serial.print(g_sensors[IDX_ECT], 1);         Serial.print(F("C "));
+        // Serial.print(F("HV Intake: ")); Serial.print(g_sensors[IDX_HV_INTAKE_C], 1); Serial.print(F("C "));
+        // Serial.print(F("TB1: "));       Serial.print(g_sensors[IDX_HV_TB1_C], 1);    Serial.print(F("C "));
+        // Serial.print(F("TB2: "));       Serial.print(g_sensors[IDX_HV_TB2_C], 1);    Serial.print(F("C "));
+        // Serial.print(F("TB3: "));       Serial.print(g_sensors[IDX_HV_TB3_C], 1);    Serial.print(F("C "));
+        // Serial.print(F("SOC: "));       Serial.print(g_sensors[8], 1);               Serial.print(F("% "));
+        // Serial.print(F("Ebar: "));      Serial.print((int)g_sensors[9]);             Serial.print(F("  "));
+        // Serial.print(F("ES: "));        Serial.print((int)g_sensors[10]);            Serial.print(F("  "));
+        // Serial.print(F("BFS: "));     Serial.print((int)g_sensors[11]);            Serial.print(F("  "));
+        // Serial.print(F("Dash Bright: ")); Serial.print((int)g_sensors[IDX_DASH_BRIGHT]); Serial.print(F("%  "));
+        // Serial.print(F("Car Dim: "));  Serial.print((int)g_sensors[IDX_CAR_DIM]);    Serial.print(F("  "));
+        // Serial.println();
 
         // sendCANFrame(0x7E2, {0x06,0x30,0x81,0x06,0x06,6,0x00,0x00});
 

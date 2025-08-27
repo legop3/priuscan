@@ -11,6 +11,11 @@
 #include <Arduino.h>
 #include <Wire.h>
 #include <SPI.h>
+#include <Adafruit_NeoPixel.h>
+
+#define SHIFT_LED_PIN 38
+#define SHIFT_LED_COUNT 8
+Adafruit_NeoPixel shiftStrip(SHIFT_LED_COUNT, SHIFT_LED_PIN, NEO_GRB + NEO_KHZ800);
 
 // #define EEZ_FOR_LVGL
 #define EEZ_UI_MAIN_SYMBOL SCREEN_ID_MAIN
@@ -28,7 +33,7 @@ extern "C" {
 }
 #endif
 
-#define GFX_BL  2   // Backlight pin
+// #define GFX_BL  2   // Backlight pin
 
 #define LGFX_USE_V1
 #include <LovyanGFX.hpp>
@@ -72,6 +77,7 @@ struct PayloadF {
   uint8_t est;
   uint8_t bfs;
   uint8_t bfor;
+  uint8_t dim;
 };
 #pragma pack(pop)
 
@@ -280,23 +286,155 @@ static void IRAM_ATTR onLvglTick() {
 // ──────────────────────────────────────────────────────────────
 // Helpers (optional)
 // ──────────────────────────────────────────────────────────────
-static void inspect_active_screen() {
-  lv_obj_t *scr = lv_scr_act();
-  uint32_t cnt = lv_obj_get_child_cnt(scr);
-  Serial.printf("EEZ/LVGL: active screen children = %u\n", (unsigned)cnt);
-  for (uint32_t i = 0; i < cnt; i++) {
-    lv_obj_t *c = lv_obj_get_child(scr, i);
-    Serial.printf("  [%u] hidden=%d opa=%u w=%d h=%d\n", i,
-      lv_obj_has_flag(c, LV_OBJ_FLAG_HIDDEN),
-      (unsigned)lv_obj_get_style_opa(c, 0),
-      (int)lv_obj_get_width(c),
-      (int)lv_obj_get_height(c));
-  }
+
+
+// One place to set brightness 0..100%
+uint8_t ui_brightness_pct = 60;  // start value
+
+void setShiftStripBrightness(uint8_t pct) {     // 0..100
+  if (pct > 100) pct = 100;
+  ui_brightness_pct = pct;
+  uint8_t neo = map(pct, 0, 100, 0, 255);
+  shiftStrip.setBrightness(neo);                // applies on next show()
 }
+
+#define BL_PIN        2          // <- your backlight pin
+#define BL_CH         0
+#define BL_FREQ       20000      // 20 kHz: no audible whine
+#define BL_RES_BITS   10         // 10-bit PWM (0..1023)
+
+void setBacklightPct(uint8_t pct) { // 0..100
+  if (pct > 100) pct = 100;
+  uint32_t duty = (uint32_t)pct * ((1 << BL_RES_BITS) - 1) / 100;
+  ledcWrite(BL_CH, duty);
+}
+
+void backlightInit() {
+  ledcSetup(BL_CH, BL_FREQ, BL_RES_BITS);
+  ledcAttachPin(BL_PIN, BL_CH);
+  setBacklightPct(10);           // initial brightness
+}
+
+
+
+
+
+// Quick color helpers
+static inline uint32_t rgb(uint8_t r, uint8_t g, uint8_t b) {
+  return shiftStrip.Color(r,g,b);
+}
+
+// A tiny gradient: green → yellow → orange → red by index
+static uint32_t indexColor(uint8_t i, uint8_t total) {
+  // Map i (0..total-1) to hue-ish in 0..3 buckets
+  if (i < total * 3 / 8)   return rgb(0, 255, 0);     // green
+  if (i < total * 5 / 8)   return rgb(180, 180, 0);   // yellow
+  if (i < total * 7 / 8)   return rgb(255, 80, 0);    // orange
+  return rgb(255, 0, 0);                                // red
+}
+
+// static void inspect_active_screen() {
+//   lv_obj_t *scr = lv_scr_act();
+//   uint32_t cnt = lv_obj_get_child_cnt(scr);
+//   Serial.printf("EEZ/LVGL: active screen children = %u\n", (unsigned)cnt);
+//   for (uint32_t i = 0; i < cnt; i++) {
+//     lv_obj_t *c = lv_obj_get_child(scr, i);
+//     Serial.printf("  [%u] hidden=%d opa=%u w=%d h=%d\n", i,
+//       lv_obj_has_flag(c, LV_OBJ_FLAG_HIDDEN),
+//       (unsigned)lv_obj_get_style_opa(c, 0),
+//       (int)lv_obj_get_width(c),
+//       (int)lv_obj_get_height(c));
+//   }
+// }
 
 inline float c_to_f(float c) {
     return (c * 9.0f / 5.0f) + 32.0f;
 }
+
+// ── tunables ─────────────────────────────────────────────────────────────
+// #define SHIFT_LED_COUNT       8
+#define SHIFT_RPM_ON_THRESH   800   // treat engine "on" when RPM > ~800 (tweak)
+#define EBAR_WARN_ON          48    // start warning near engine-on at 50
+#define EBAR_WARN_OFF         46    // hysteresis to exit warn
+#define BLINK_TOGGLES_MAX      8    // ~4 full blinks per crossing
+#define BLINK_PERIOD_NEAR_MS 120
+#define BLINK_PERIOD_OVER_MS  90
+
+// helper for colors (Adafruit_NeoPixel)
+static inline uint32_t RGB(uint8_t r,uint8_t g,uint8_t b){ return shiftStrip.Color(r,g,b); }
+
+void updateShiftStrip(int8_t ebar_raw, float rpm) {
+  static bool     wasInWarn = false;     // last state of warn window
+  static uint8_t  blinksRemaining = 0;   // blink toggles left
+  static bool     blinkOn = true;
+  static uint32_t lastBlinkMs = 0;
+
+  const int N = SHIFT_LED_COUNT;
+
+  // Engine running? strip off + reset state
+  if (rpm > SHIFT_RPM_ON_THRESH) {
+    if (wasInWarn || blinksRemaining) { shiftStrip.clear(); shiftStrip.show(); }
+    wasInWarn = false; blinksRemaining = 0; blinkOn = true; return;
+  }
+
+  // Immediate (no smoothing): only positive power, clamp for sanity
+  int ebar_pos = (ebar_raw > 0) ? ebar_raw : 0;
+  if (ebar_pos > 80) ebar_pos = 80;
+
+  // Hysteresis window around 48
+  bool inWarnNow = (!wasInWarn) ? (ebar_pos >= EBAR_WARN_ON)
+                                : (ebar_pos >  EBAR_WARN_OFF);
+
+  // Rising edge → start a short blink burst
+  if (inWarnNow && !wasInWarn) {
+    blinksRemaining = BLINK_TOGGLES_MAX;
+    blinkOn = true;
+    lastBlinkMs = millis();
+  }
+  wasInWarn = inWarnNow;
+
+  if (inWarnNow) {
+    // Blink for a few toggles, then solid red
+    uint32_t period = (ebar_pos >= 50) ? BLINK_PERIOD_OVER_MS : BLINK_PERIOD_NEAR_MS;
+
+    if (blinksRemaining > 0) {
+      uint32_t now = millis();
+      if (now - lastBlinkMs >= period) {
+        lastBlinkMs = now;
+        blinkOn = !blinkOn;
+        blinksRemaining--;
+      }
+      uint32_t c = blinkOn ? RGB(255,0,0) : RGB(40,0,0);
+      for (int i=0;i<N;i++) shiftStrip.setPixelColor(i, c);
+      shiftStrip.show();
+      return;
+    } else {
+      for (int i=0;i<N;i++) shiftStrip.setPixelColor(i, RGB(255,0,0));
+      shiftStrip.show();
+      return;
+    }
+  }
+
+  // Below warn: instantaneous progressive fill (no smoothing)
+  int lit = (ebar_pos * N) / EBAR_WARN_ON;   // map 0..48 → 0..8 (integer math)
+  if (lit < 0) lit = 0; if (lit > N) lit = N;
+
+  for (int i=0;i<N;i++) {
+    if (i < lit) {
+      uint32_t c =
+        (i < N*3/8) ? RGB(0,255,0) :
+        (i < N*5/8) ? RGB(180,180,0) :
+        (i < N*7/8) ? RGB(255,80,0) :
+                      RGB(255,0,0);
+      shiftStrip.setPixelColor(i, c);
+    } else {
+      shiftStrip.setPixelColor(i, 0);
+    }
+  }
+  shiftStrip.show();
+}
+
+
 
 
 // ──────────────────────────────────────────────────────────────
@@ -316,13 +454,14 @@ void setup() {
   // Strengthen drive BEFORE lcd.begin()
   set_rgb_drive_strength();
 
-  lcd.setRotation(2);
+  // lcd.setRotation(2);
   lcd.begin();
-  pinMode(GFX_BL, OUTPUT);
-  digitalWrite(GFX_BL, HIGH);
+  // pinMode(GFX_BL, OUTPUT);
+  // digitalWrite(GFX_BL, HIGH);
   // lcd.fillRect(0, 0, 240, 240, 0x07E0 /* pure green in RGB565 */);
   // delay(300);
   // lcd.clear();
+  backlightInit();
 
   // delay(1000);
   lv_init();
@@ -364,6 +503,12 @@ void setup() {
   // Serial.printf("Timing: PCLK=%lu Hz, Htot=%lu, Vtot=%lu -> FPS≈%.2f\n",
   //               (unsigned long)PCLK_HZ, (unsigned long)Htot, (unsigned long)Vtot, fps);
 
+
+
+  shiftStrip.begin();
+  shiftStrip.setBrightness(255);
+  shiftStrip.clear();
+  shiftStrip.show();
 
 }
 
@@ -496,16 +641,59 @@ void loop() {
       // lv_label_set_text(objects.battery_fan_speed, bfs);
       lv_label_set_text_fmt(objects.battery_fan_speed, "%d", bfs);
       if (lastPacket.bfor) {
-        // lv_obj_set_style_bg_color(objects.battery_fan_control, g_green, LV_PART_MAIN);
-        // lv_obj_set_style_opa(objects.battery_fan_control, LV_OPA_COVER, LV_PART_MAIN);
-        Serial.println("turning fan LED on");
-        lv_led_on(objects.battery_fan_control);
+        lv_obj_set_style_bg_color(objects.battery_fan_control, g_green, LV_PART_MAIN);
+        lv_obj_set_style_opa(objects.battery_fan_control, LV_OPA_COVER, LV_PART_MAIN);
+        // Serial.println("turning fan LED on");
+        // lv_led_on(objects.battery_fan_control);
       } else {
-        // lv_obj_set_style_bg_color(objects.battery_fan_control, g_red, LV_PART_MAIN);
-        // lv_obj_set_style_opa(objects.battery_fan_control, LV_OPA_COVER, LV_PART_MAIN);
-        Serial.println("turning fan LED off");
-        lv_led_off(objects.battery_fan_control);
+        lv_obj_set_style_bg_color(objects.battery_fan_control, g_red, LV_PART_MAIN);
+        lv_obj_set_style_opa(objects.battery_fan_control, LV_OPA_COVER, LV_PART_MAIN);
+        // Serial.println("turning fan LED off");
+        // lv_led_off(objects.battery_fan_control);
       }
+
+      // set the three battery temps:
+      float bt1f = c_to_f(lastPacket.tb1_C);
+      float bt2f = c_to_f(lastPacket.tb2_C);
+      float bt3f = c_to_f(lastPacket.tb3_C);
+
+      // float kW = (watts / 1000.0f);
+      // char kw_buf[16];
+      // snprintf(kw_buf, sizeof(kw_buf), "%.2f\nkW", kW);
+      // lv_label_set_text(objects.kw_label, kw_buf);
+
+      char bt_buf[16];
+      snprintf(bt_buf, sizeof(bt_buf), "%.2f°", bt1f);
+      lv_label_set_text(objects.bt1, bt_buf);
+      snprintf(bt_buf, sizeof(bt_buf), "%.2f°", bt2f);
+      lv_label_set_text(objects.bt2, bt_buf);
+      snprintf(bt_buf, sizeof(bt_buf), "%.2f°", bt3f);
+      lv_label_set_text(objects.bt3, bt_buf);
+
+      int battery_voltage = round((lastPacket.hv_voltage_V));
+      int battery_amperage = round((lastPacket.hv_current_A));
+      lv_label_set_text_fmt(objects.battery_voltage, "%dV", battery_voltage);
+      lv_label_set_text_fmt(objects.battery_amperage, "%dA", battery_amperage);
+
+
+      // if(rpm_val == 0) {
+      //   lv_label_set_text(objects.ebar_testing, String(lastPacket.ebar).c_str());
+      // }
+
+      updateShiftStrip(lastPacket.ebar, rpm_val);
+
+
+      if (lastPacket.dim) {
+        setBacklightPct(30);    // dim
+        setShiftStripBrightness(5);
+        Serial.println("dimming");
+      } else {
+        setBacklightPct(100);    // normal
+        setShiftStripBrightness(100);
+        Serial.println("bright");
+      }
+
+      
 
 
 
