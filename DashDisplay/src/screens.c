@@ -86,7 +86,7 @@ void create_screen_main() {
             lv_obj_t *obj = lv_obj_create(parent_obj);
             objects.battery_info_panel = obj;
             lv_obj_set_pos(obj, 29, 26);
-            lv_obj_set_size(obj, 156, 185);
+            lv_obj_set_size(obj, 175, 214);
             lv_obj_clear_flag(obj, LV_OBJ_FLAG_CLICKABLE|LV_OBJ_FLAG_CLICK_FOCUSABLE|LV_OBJ_FLAG_GESTURE_BUBBLE|LV_OBJ_FLAG_PRESS_LOCK|LV_OBJ_FLAG_SCROLLABLE|LV_OBJ_FLAG_SCROLL_CHAIN_HOR|LV_OBJ_FLAG_SCROLL_CHAIN_VER|LV_OBJ_FLAG_SCROLL_ELASTIC|LV_OBJ_FLAG_SCROLL_MOMENTUM|LV_OBJ_FLAG_SCROLL_WITH_ARROW|LV_OBJ_FLAG_SNAPPABLE);
             add_style_panel_crisp(obj);
             lv_obj_set_style_bg_color(obj, lv_color_hex(0xff00ff1b), LV_PART_MAIN | LV_STATE_DEFAULT);
@@ -123,6 +123,13 @@ void create_screen_main() {
                     lv_obj_set_style_border_width(obj, 2, LV_PART_MAIN | LV_STATE_DEFAULT);
                     lv_label_set_text(obj, "909°");
                 }
+                {
+                    lv_obj_t *obj = lv_label_create(parent_obj);
+                    lv_obj_set_pos(obj, -14, -16);
+                    lv_obj_set_size(obj, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+                    add_style_text_readable(obj);
+                    lv_label_set_text(obj, "Average Battery Info");
+                }
             }
         }
         {
@@ -130,7 +137,7 @@ void create_screen_main() {
             lv_obj_t *obj = lv_obj_create(parent_obj);
             objects.battery_fan_info_panel = obj;
             lv_obj_set_pos(obj, 216, 26);
-            lv_obj_set_size(obj, 134, 138);
+            lv_obj_set_size(obj, 184, 214);
             lv_obj_clear_flag(obj, LV_OBJ_FLAG_CLICKABLE|LV_OBJ_FLAG_CLICK_FOCUSABLE|LV_OBJ_FLAG_GESTURE_BUBBLE|LV_OBJ_FLAG_PRESS_LOCK|LV_OBJ_FLAG_SCROLLABLE|LV_OBJ_FLAG_SCROLL_CHAIN_HOR|LV_OBJ_FLAG_SCROLL_CHAIN_VER|LV_OBJ_FLAG_SCROLL_ELASTIC|LV_OBJ_FLAG_SCROLL_MOMENTUM|LV_OBJ_FLAG_SCROLL_WITH_ARROW|LV_OBJ_FLAG_SNAPPABLE);
             add_style_panel_crisp(obj);
             lv_obj_set_style_bg_color(obj, lv_color_hex(0xff00ff1b), LV_PART_MAIN | LV_STATE_DEFAULT);
@@ -144,19 +151,19 @@ void create_screen_main() {
                     // battery intake temp
                     lv_obj_t *obj = lv_label_create(parent_obj);
                     objects.battery_intake_temp = obj;
-                    lv_obj_set_pos(obj, 0, -33);
+                    lv_obj_set_pos(obj, 0, -29);
                     lv_obj_set_size(obj, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
                     add_style_text_readable(obj);
                     lv_obj_set_style_text_font(obj, &lv_font_montserrat_48, LV_PART_MAIN | LV_STATE_DEFAULT);
                     lv_obj_set_style_pad_bottom(obj, 4, LV_PART_MAIN | LV_STATE_DEFAULT);
                     lv_obj_set_style_align(obj, LV_ALIGN_CENTER, LV_PART_MAIN | LV_STATE_DEFAULT);
-                    lv_label_set_text(obj, "999°");
+                    lv_label_set_text(obj, "999°\nIntake");
                 }
                 {
                     // battery fan speed
                     lv_obj_t *obj = lv_label_create(parent_obj);
                     objects.battery_fan_speed = obj;
-                    lv_obj_set_pos(obj, 8, 5);
+                    lv_obj_set_pos(obj, -18, -6);
                     lv_obj_set_size(obj, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
                     add_style_text_readable(obj);
                     lv_obj_set_style_text_font(obj, &lv_font_montserrat_48, LV_PART_MAIN | LV_STATE_DEFAULT);
@@ -167,7 +174,7 @@ void create_screen_main() {
                     // battery fan control
                     lv_obj_t *obj = lv_obj_create(parent_obj);
                     objects.battery_fan_control = obj;
-                    lv_obj_set_pos(obj, -3, 53);
+                    lv_obj_set_pos(obj, 8, 117);
                     lv_obj_set_size(obj, 47, 50);
                     add_style_panel_crisp(obj);
                     lv_obj_set_style_radius(obj, 1255, LV_PART_MAIN | LV_STATE_DEFAULT);
@@ -176,23 +183,14 @@ void create_screen_main() {
                     lv_obj_set_style_border_width(obj, 2, LV_PART_MAIN | LV_STATE_DEFAULT);
                     lv_obj_set_style_bg_color(obj, lv_color_hex(0xffff0000), LV_PART_MAIN | LV_STATE_DEFAULT);
                 }
+                {
+                    lv_obj_t *obj = lv_label_create(parent_obj);
+                    lv_obj_set_pos(obj, 7, -16);
+                    lv_obj_set_size(obj, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+                    add_style_text_readable(obj);
+                    lv_label_set_text(obj, "Battery Fan Stats");
+                }
             }
-        }
-        {
-            lv_obj_t *obj = lv_label_create(parent_obj);
-            lv_obj_set_pos(obj, 50, 211);
-            lv_obj_set_size(obj, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-            add_style_text_readable(obj);
-            lv_obj_set_style_text_font(obj, &lv_font_montserrat_28, LV_PART_MAIN | LV_STATE_DEFAULT);
-            lv_label_set_text(obj, "Battery\nStatus");
-        }
-        {
-            lv_obj_t *obj = lv_label_create(parent_obj);
-            lv_obj_set_pos(obj, 195, 164);
-            lv_obj_set_size(obj, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-            add_style_text_readable(obj);
-            lv_obj_set_style_text_font(obj, &lv_font_montserrat_28, LV_PART_MAIN | LV_STATE_DEFAULT);
-            lv_label_set_text(obj, "Battery Fan\nStatus");
         }
         {
             // numbers panel
@@ -208,8 +206,8 @@ void create_screen_main() {
                     // battery temps
                     lv_obj_t *obj = lv_obj_create(parent_obj);
                     objects.battery_temps = obj;
-                    lv_obj_set_pos(obj, 16, 2);
-                    lv_obj_set_size(obj, 142, 166);
+                    lv_obj_set_pos(obj, 13, -20);
+                    lv_obj_set_size(obj, 168, 166);
                     lv_obj_clear_flag(obj, LV_OBJ_FLAG_CLICKABLE|LV_OBJ_FLAG_SCROLLABLE);
                     add_style_panel_crisp(obj);
                     lv_obj_set_style_bg_color(obj, lv_color_hex(0xff618cd6), LV_PART_MAIN | LV_STATE_DEFAULT);
@@ -217,10 +215,10 @@ void create_screen_main() {
                         lv_obj_t *parent_obj = obj;
                         {
                             lv_obj_t *obj = lv_label_create(parent_obj);
-                            lv_obj_set_pos(obj, -12, -12);
+                            lv_obj_set_pos(obj, 4, -12);
                             lv_obj_set_size(obj, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
                             add_style_text_readable(obj);
-                            lv_label_set_text(obj, "Battery Temps:");
+                            lv_label_set_text(obj, "Battery Temps");
                         }
                         {
                             // bt1
@@ -258,8 +256,8 @@ void create_screen_main() {
                     // battery stats
                     lv_obj_t *obj = lv_obj_create(parent_obj);
                     objects.battery_stats = obj;
-                    lv_obj_set_pos(obj, 175, 2);
-                    lv_obj_set_size(obj, 155, 166);
+                    lv_obj_set_pos(obj, 196, -20);
+                    lv_obj_set_size(obj, 184, 166);
                     lv_obj_clear_flag(obj, LV_OBJ_FLAG_CLICKABLE|LV_OBJ_FLAG_SCROLLABLE);
                     add_style_panel_crisp(obj);
                     lv_obj_set_style_bg_color(obj, lv_color_hex(0xffcf97ce), LV_PART_MAIN | LV_STATE_DEFAULT);
@@ -267,7 +265,7 @@ void create_screen_main() {
                         lv_obj_t *parent_obj = obj;
                         {
                             lv_obj_t *obj = lv_label_create(parent_obj);
-                            lv_obj_set_pos(obj, 6, -12);
+                            lv_obj_set_pos(obj, 22, -12);
                             lv_obj_set_size(obj, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
                             add_style_text_readable(obj);
                             lv_label_set_text(obj, "Battery Stats");
@@ -297,16 +295,6 @@ void create_screen_main() {
                     }
                 }
             }
-        }
-        {
-            // ebar testing
-            lv_obj_t *obj = lv_label_create(parent_obj);
-            objects.ebar_testing = obj;
-            lv_obj_set_pos(obj, 371, 222);
-            lv_obj_set_size(obj, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-            add_style_text_readable(obj);
-            lv_obj_set_style_text_font(obj, &lv_font_montserrat_48, LV_PART_MAIN | LV_STATE_DEFAULT);
-            lv_label_set_text(obj, "Text");
         }
     }
     

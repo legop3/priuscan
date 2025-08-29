@@ -616,7 +616,7 @@ void loop() {
       // battery fan info panel
       float intake_temp_f = c_to_f(lastPacket.hv_intake_C);
       int intake_temp_f_round = (int)roundf(intake_temp_f);
-      lv_label_set_text_fmt(objects.battery_intake_temp, "%d°", intake_temp_f_round);
+      lv_label_set_text_fmt(objects.battery_intake_temp, "%d°\nIntake", intake_temp_f_round);
       // set color of panel based on intake temp in F:
       if (intake_temp_f < 60) {
         lv_obj_set_style_bg_color(objects.battery_fan_info_panel, g_blue, LV_PART_MAIN);

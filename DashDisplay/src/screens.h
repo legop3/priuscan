@@ -28,7 +28,6 @@ typedef struct _objects_t {
     lv_obj_t *battery_stats;
     lv_obj_t *battery_voltage;
     lv_obj_t *battery_amperage;
-    lv_obj_t *ebar_testing;
 } objects_t;
 
 extern objects_t objects;
