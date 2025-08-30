@@ -359,33 +359,64 @@ inline float c_to_f(float c) {
 #define BLINK_TOGGLES_MAX      8    // ~4 full blinks per crossing
 #define BLINK_PERIOD_NEAR_MS 120
 #define BLINK_PERIOD_OVER_MS  90
+#define ENGINE_INDICATOR_COLOR  RGB(255,100,0)
 
 // helper for colors (Adafruit_NeoPixel)
 static inline uint32_t RGB(uint8_t r,uint8_t g,uint8_t b){ return shiftStrip.Color(r,g,b); }
 
 void updateShiftStrip(int8_t ebar_raw, float rpm) {
-  static bool     wasInWarn = false;     // last state of warn window
-  static uint8_t  blinksRemaining = 0;   // blink toggles left
+  static bool     wasInWarn = false;     // state for positive-power warn
+  static uint8_t  blinksRemaining = 0;   // blink toggles left (pos-power only)
   static bool     blinkOn = true;
   static uint32_t lastBlinkMs = 0;
 
   const int N = SHIFT_LED_COUNT;
 
-  // Engine running? strip off + reset state
+  // ── Engine running takes precedence: two center LEDs orange ────────────
   if (rpm > SHIFT_RPM_ON_THRESH) {
-    if (wasInWarn || blinksRemaining) { shiftStrip.clear(); shiftStrip.show(); }
-    wasInWarn = false; blinksRemaining = 0; blinkOn = true; return;
+    shiftStrip.clear();
+    if (N >= 2) {
+      int left  = (N / 2) - 1;   // for N=8 → 3
+      int right =  N / 2;        //            4
+      shiftStrip.setPixelColor(left,  ENGINE_INDICATOR_COLOR);
+      shiftStrip.setPixelColor(right, ENGINE_INDICATOR_COLOR);
+    } else if (N == 1) {
+      shiftStrip.setPixelColor(0, ENGINE_INDICATOR_COLOR);
+    }
+    shiftStrip.show();
+
+    // reset warn/blink state so it re-arms cleanly when ICE turns off
+    wasInWarn = false; blinksRemaining = 0; blinkOn = true;
+    return;
   }
 
-  // Immediate (no smoothing): only positive power, clamp for sanity
-  int ebar_pos = (ebar_raw > 0) ? ebar_raw : 0;
-  if (ebar_pos > 80) ebar_pos = 80;
+  // ── Regen branch (ebar < 0): blue, fill right→left, immediate ──────────
+  if (ebar_raw < 0) {
+    int mag = -ebar_raw;                 // 0..100
+    if (mag > 100) mag = 100;
+    int lit = (mag * N) / 100;           // 0..N
 
-  // Hysteresis window around 48
+    for (int i=0;i<N;i++) shiftStrip.setPixelColor(i, 0);
+    for (int k=0; k<lit; ++k) {
+      int idx = (N-1) - k;               // right→left
+      shiftStrip.setPixelColor(idx, RGB(0,80,255)); // blue
+    }
+    shiftStrip.show();
+
+    // don’t arm the positive-power blink logic from regen
+    wasInWarn = false; blinksRemaining = 0; blinkOn = true;
+    return;
+  }
+
+  // ── Positive-power “approach 50” behavior (no smoothing) ───────────────
+  int ebar_pos = ebar_raw > 0 ? ebar_raw : 0;
+  if (ebar_pos > 100) ebar_pos = 100;
+
+  // warn window with hysteresis
   bool inWarnNow = (!wasInWarn) ? (ebar_pos >= EBAR_WARN_ON)
                                 : (ebar_pos >  EBAR_WARN_OFF);
 
-  // Rising edge → start a short blink burst
+  // on rising edge, start a short blink burst
   if (inWarnNow && !wasInWarn) {
     blinksRemaining = BLINK_TOGGLES_MAX;
     blinkOn = true;
@@ -394,9 +425,7 @@ void updateShiftStrip(int8_t ebar_raw, float rpm) {
   wasInWarn = inWarnNow;
 
   if (inWarnNow) {
-    // Blink for a few toggles, then solid red
     uint32_t period = (ebar_pos >= 50) ? BLINK_PERIOD_OVER_MS : BLINK_PERIOD_NEAR_MS;
-
     if (blinksRemaining > 0) {
       uint32_t now = millis();
       if (now - lastBlinkMs >= period) {
@@ -415,8 +444,8 @@ void updateShiftStrip(int8_t ebar_raw, float rpm) {
     }
   }
 
-  // Below warn: instantaneous progressive fill (no smoothing)
-  int lit = (ebar_pos * N) / EBAR_WARN_ON;   // map 0..48 → 0..8 (integer math)
+  // below warn: progressive fill (green→yellow→orange→red), left→right
+  int lit = (ebar_pos * N) / EBAR_WARN_ON;   // map 0..48 → 0..N
   if (lit < 0) lit = 0; if (lit > N) lit = N;
 
   for (int i=0;i<N;i++) {
@@ -433,6 +462,8 @@ void updateShiftStrip(int8_t ebar_raw, float rpm) {
   }
   shiftStrip.show();
 }
+
+
 
 
 
@@ -639,15 +670,17 @@ void loop() {
       // change battery fan speed and control LED
       int bfs = (int)roundf(lastPacket.bfs);
       // lv_label_set_text(objects.battery_fan_speed, bfs);
-      lv_label_set_text_fmt(objects.battery_fan_speed, "%d", bfs);
+      lv_label_set_text_fmt(objects.battery_fan_speed, "S: %d", bfs);
       if (lastPacket.bfor) {
         lv_obj_set_style_bg_color(objects.battery_fan_control, g_green, LV_PART_MAIN);
         lv_obj_set_style_opa(objects.battery_fan_control, LV_OPA_COVER, LV_PART_MAIN);
+        lv_label_set_text(objects.fan_control_label, "Control\nEnabled");
         // Serial.println("turning fan LED on");
         // lv_led_on(objects.battery_fan_control);
       } else {
         lv_obj_set_style_bg_color(objects.battery_fan_control, g_red, LV_PART_MAIN);
         lv_obj_set_style_opa(objects.battery_fan_control, LV_OPA_COVER, LV_PART_MAIN);
+        lv_label_set_text(objects.fan_control_label, "Control\nDisabled");
         // Serial.println("turning fan LED off");
         // lv_led_off(objects.battery_fan_control);
       }
@@ -689,11 +722,16 @@ void loop() {
         Serial.println("dimming");
       } else {
         setBacklightPct(100);    // normal
-        setShiftStripBrightness(100);
+        setShiftStripBrightness(50);
         Serial.println("bright");
       }
 
-      
+      // ebar and drain mode
+      int ebar_round = (int)roundf(lastPacket.ebar);
+      int drain_round = (int)roundf(lastPacket.est);
+
+      lv_label_set_text_fmt(objects.ebar_label, "Ebar: %d", ebar_round);
+      lv_label_set_text_fmt(objects.energy_drain, "Mode: %d", drain_round);
 
 
 
