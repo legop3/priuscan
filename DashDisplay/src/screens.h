@@ -29,6 +29,7 @@ typedef struct _objects_t {
     lv_obj_t *battery_voltage;
     lv_obj_t *battery_amperage;
     lv_obj_t *ebar_info;
+    lv_obj_t *ebar_bar;
     lv_obj_t *ebar_label;
     lv_obj_t *energy_drain;
 } objects_t;

@@ -1,21 +1,26 @@
 /*
-  LVGL v8.x + LovyanGFX v1 + EEZ (UI-only) — high-FPS, artifact-hardened
-  - PCLK increased (default 24 MHz; adjust below)
-  - Toggleable PCLK sampling edge (try 0/1 if you see horizontal smear)
-  - Stronger GPIO drive on RGB/sync/PCLK pins (ESP32-S3)
-  - DMA-capable double draw buffers in internal SRAM
-  - Safe DMA flush: pushImageDMA + waitDMA() before lv_disp_flush_ready
-  - True 5 ms LVGL tick; refresh timer set to 10 ms (v8: via _lv_disp_get_refr_timer)
+  LVGL v8.x + LovyanGFX v1 + EEZ (UI-only) — optimized
+  - One WS2812 show() per frame via dirty flag
+  - LVGL widgets update only on change; styles only on band transitions
+  - Larger DMA draw buffers if RAM allows
+  - No %f: fixed-point helpers for labels (kW, temps)
 */
 
 #include <Arduino.h>
 #include <Wire.h>
 #include <SPI.h>
 #include <Adafruit_NeoPixel.h>
+#include <math.h>
+#include <limits.h>
 
-#define SHIFT_LED_PIN 38
+#define SHIFT_LED_PIN   38
 #define SHIFT_LED_COUNT 8
 Adafruit_NeoPixel shiftStrip(SHIFT_LED_COUNT, SHIFT_LED_PIN, NEO_GRB + NEO_KHZ800);
+
+// ============ LED "dirty" batching (one show per frame) ============
+static volatile bool g_led_dirty = false;
+static inline void led_mark_dirty() { g_led_dirty = true; }
+static inline void led_maybe_show() { if (g_led_dirty) { shiftStrip.show(); g_led_dirty = false; } }
 
 // #define EEZ_FOR_LVGL
 #define EEZ_UI_MAIN_SYMBOL SCREEN_ID_MAIN
@@ -28,38 +33,32 @@ extern "C" {
 #endif
 #include "ui.h"
 #include "screens.h"
-// #include "styles.h"
 #ifdef __cplusplus
 }
 #endif
-
-// #define GFX_BL  2   // Backlight pin
 
 #define LGFX_USE_V1
 #include <LovyanGFX.hpp>
 #include <lgfx/v1/platforms/esp32s3/Panel_RGB.hpp>
 #include <lgfx/v1/platforms/esp32s3/Bus_RGB.hpp>
 
-// ESP32-S3 helpers for drive strength + DMA allocations
 #include "driver/gpio.h"
 #include "esp_heap_caps.h"
 
 // ──────────────────────────────────────────────────────────────
 // TUNABLES
 // ──────────────────────────────────────────────────────────────
-// #define PCLK_HZ            10000000   // ↑ try 24 MHz first; raise only if clean
-#define PCLK_HZ            15000000   // ↑ try 24 MHz first; raise only if clean
-#define PCLK_ACTIVE_NEG    0          // try 0 or 1; wrong edge => horizontal scrambling
-#define GPIO_DRIVE_LEVEL   GPIO_DRIVE_CAP_1  // 0..3 (S3); 3 = strongest
+#define PCLK_HZ            15000000
+#define PCLK_ACTIVE_NEG    0
+#define GPIO_DRIVE_LEVEL   GPIO_DRIVE_CAP_1  // 0..3
 
-// ============ UART link: payload & pins (ESP32‑S3) ============
+// ============ UART link: payload & pins (ESP32-S3) ============
 #include <HardwareSerial.h>
 HardwareSerial& LINK = Serial2;
 
-// Use the pins you mentioned:
-static const int LINK_RX = 19;     // from sender's TX
-static const int LINK_TX = 20;     // to sender's RX (usually unused on display)
-static const uint32_t LINK_BAUD = 230400;  // match the sender
+static const int LINK_RX = 19;
+static const int LINK_TX = 20;
+static const uint32_t LINK_BAUD = 230400;
 
 #pragma pack(push,1)
 struct PayloadF {
@@ -81,7 +80,7 @@ struct PayloadF {
 };
 #pragma pack(pop)
 
-// ============ Simple framed parser (0xAA | LEN | payload | XOR) ============
+// ============ Framed parser (0xAA | LEN | payload | XOR) ============
 static inline uint8_t xor_checksum(const uint8_t* p, size_t n) {
   uint8_t x = 0; for (size_t i=0;i<n;++i) x ^= p[i]; return x;
 }
@@ -131,9 +130,8 @@ static void pollUart() {
   }
 }
 
-
 // ──────────────────────────────────────────────────────────────
-// Apply stronger drive on all RGB pins + sync + PCLK
+// Drive strength on RGB/sync/PCLK pins
 // ──────────────────────────────────────────────────────────────
 static void set_rgb_drive_strength() {
   const gpio_num_t pins[] = {
@@ -150,7 +148,7 @@ static void set_rgb_drive_strength() {
 }
 
 // ──────────────────────────────────────────────────────────────
-// LovyanGFX display for ESP32-S3 RGB panel (800x480)
+// LovyanGFX device
 // ──────────────────────────────────────────────────────────────
 class LGFX : public lgfx::LGFX_Device {
 public:
@@ -189,11 +187,11 @@ public:
       cfg.pin_pclk    = GPIO_NUM_0;
 
       cfg.freq_write      = PCLK_HZ;
-      cfg.pclk_active_neg = PCLK_ACTIVE_NEG; // sampling edge
+      cfg.pclk_active_neg = PCLK_ACTIVE_NEG;
       cfg.de_idle_high    = 0;
       cfg.pclk_idle_high  = 0;
 
-      // Keep your proven baseline timings at higher PCLK (tighten later if clean)
+      // timings
       cfg.hsync_polarity    = 1;
       cfg.hsync_front_porch = 40;
       cfg.hsync_pulse_width = 48;
@@ -235,8 +233,8 @@ static lv_color_t *buf1 = nullptr;
 static lv_color_t *buf2 = nullptr;
 static lv_disp_drv_t disp_drv;
 
-// Allocate two DMA-capable line buffers in internal SRAM (fallback ladder)
-static const int TARGET_BUF_LINES[] = { 80, 64, 48, 40, 32, 24, 16 };
+// Try bigger first for fewer flushes:
+static const int TARGET_BUF_LINES[] = { 160, 120, 96, 80, 64, 48, 32, 24, 16 };
 
 static bool alloc_lvgl_draw_buffers(uint16_t w) {
   for (int lines : TARGET_BUF_LINES) {
@@ -253,7 +251,7 @@ static bool alloc_lvgl_draw_buffers(uint16_t w) {
     if (b1) heap_caps_free(b1);
     if (b2) heap_caps_free(b2);
   }
-  // single-buffer fallback (still DMA RAM)
+  // single-buffer fallback
   int lines = 16;
   size_t px    = (size_t)w * (size_t)lines;
   size_t bytes = px * sizeof(lv_color_t);
@@ -266,94 +264,43 @@ static bool alloc_lvgl_draw_buffers(uint16_t w) {
   return false;
 }
 
-// Safe DMA flush (LovyanGFX v1): waitDMA() before releasing the buffer
+// Safe DMA flush (LovyanGFX v1)
 static void my_disp_flush(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *color_p) {
   uint32_t w = (area->x2 - area->x1 + 1);
   uint32_t h = (area->y2 - area->y1 + 1);
   lcd.pushImageDMA(area->x1, area->y1, w, h, (const lgfx::rgb565_t*)&color_p->full);
-  lcd.waitDMA();                 // <— correct v1 API (was dmaWait)
+  lcd.waitDMA();
   lv_disp_flush_ready(disp);
 }
 
-// ──────────────────────────────────────────────────────────────
-// LVGL tick @ real 5ms (v8.x)
-// ──────────────────────────────────────────────────────────────
+// LVGL tick @ true 5ms
 static hw_timer_t * lv_tick_timer = nullptr;
-static void IRAM_ATTR onLvglTick() {
-  lv_tick_inc(5);  // true 5 ms
-}
+static void IRAM_ATTR onLvglTick() { lv_tick_inc(5); }
 
 // ──────────────────────────────────────────────────────────────
-// Helpers (optional)
+// Helpers
 // ──────────────────────────────────────────────────────────────
+inline float c_to_f(float c) { return (c * 9.0f / 5.0f) + 32.0f; }
 
+// Change guards
+template<typename T>
+static inline bool changed(T &prev, T now) { if (prev == now) return false; prev = now; return true; }
 
-// One place to set brightness 0..100%
-uint8_t ui_brightness_pct = 60;  // start value
+// LED color helper
+static inline uint32_t RGB(uint8_t r, uint8_t g, uint8_t b){ return shiftStrip.Color(r,g,b); }
 
-void setShiftStripBrightness(uint8_t pct) {     // 0..100
-  if (pct > 100) pct = 100;
-  ui_brightness_pct = pct;
-  uint8_t neo = map(pct, 0, 100, 0, 255);
-  shiftStrip.setBrightness(neo);                // applies on next show()
+// **Fixed-point label helper (centi-units, i.e., value * 100)**
+static inline void label_set_centi(lv_obj_t* lbl, int centi, const char* suffix) {
+  int sign = (centi < 0) ? -1 : 1;
+  int a = sign * centi;
+  int whole = a / 100;
+  int frac  = a % 100;
+  if (sign < 0) lv_label_set_text_fmt(lbl, "-%d.%02d%s", whole, frac, suffix);
+  else          lv_label_set_text_fmt(lbl,  "%d.%02d%s", whole, frac, suffix);
 }
 
-#define BL_PIN        2          // <- your backlight pin
-#define BL_CH         0
-#define BL_FREQ       20000      // 20 kHz: no audible whine
-#define BL_RES_BITS   10         // 10-bit PWM (0..1023)
-
-void setBacklightPct(uint8_t pct) { // 0..100
-  if (pct > 100) pct = 100;
-  uint32_t duty = (uint32_t)pct * ((1 << BL_RES_BITS) - 1) / 100;
-  ledcWrite(BL_CH, duty);
-}
-
-void backlightInit() {
-  ledcSetup(BL_CH, BL_FREQ, BL_RES_BITS);
-  ledcAttachPin(BL_PIN, BL_CH);
-  setBacklightPct(10);           // initial brightness
-}
-
-
-
-
-
-// Quick color helpers
-static inline uint32_t rgb(uint8_t r, uint8_t g, uint8_t b) {
-  return shiftStrip.Color(r,g,b);
-}
-
-// A tiny gradient: green → yellow → orange → red by index
-static uint32_t indexColor(uint8_t i, uint8_t total) {
-  // Map i (0..total-1) to hue-ish in 0..3 buckets
-  if (i < total * 3 / 8)   return rgb(0, 255, 0);     // green
-  if (i < total * 5 / 8)   return rgb(180, 180, 0);   // yellow
-  if (i < total * 7 / 8)   return rgb(255, 80, 0);    // orange
-  return rgb(255, 0, 0);                                // red
-}
-
-// static void inspect_active_screen() {
-//   lv_obj_t *scr = lv_scr_act();
-//   uint32_t cnt = lv_obj_get_child_cnt(scr);
-//   Serial.printf("EEZ/LVGL: active screen children = %u\n", (unsigned)cnt);
-//   for (uint32_t i = 0; i < cnt; i++) {
-//     lv_obj_t *c = lv_obj_get_child(scr, i);
-//     Serial.printf("  [%u] hidden=%d opa=%u w=%d h=%d\n", i,
-//       lv_obj_has_flag(c, LV_OBJ_FLAG_HIDDEN),
-//       (unsigned)lv_obj_get_style_opa(c, 0),
-//       (int)lv_obj_get_width(c),
-//       (int)lv_obj_get_height(c));
-//   }
-// }
-
-inline float c_to_f(float c) {
-    return (c * 9.0f / 5.0f) + 32.0f;
-}
-
-// ── tunables ─────────────────────────────────────────────────────────────
-// #define SHIFT_LED_COUNT       8
-#define SHIFT_RPM_ON_THRESH   800   // treat engine "on" when RPM > ~800 (tweak)
+// ── tunables for strip ───────────────────────────────────────────────────
+#define SHIFT_RPM_ON_THRESH   800   // treat engine "on" when RPM > ~800
 #define EBAR_WARN_ON          48    // start warning near engine-on at 50
 #define EBAR_WARN_OFF         46    // hysteresis to exit warn
 #define BLINK_TOGGLES_MAX      8    // ~4 full blinks per crossing
@@ -361,62 +308,50 @@ inline float c_to_f(float c) {
 #define BLINK_PERIOD_OVER_MS  90
 #define ENGINE_INDICATOR_COLOR  RGB(255,100,0)
 
-// helper for colors (Adafruit_NeoPixel)
-static inline uint32_t RGB(uint8_t r,uint8_t g,uint8_t b){ return shiftStrip.Color(r,g,b); }
-
+// LED strip logic (no .show() inside; uses led_mark_dirty())
 void updateShiftStrip(int8_t ebar_raw, float rpm) {
-  static bool     wasInWarn = false;     // state for positive-power warn
-  static uint8_t  blinksRemaining = 0;   // blink toggles left (pos-power only)
+  static bool     wasInWarn = false;
+  static uint8_t  blinksRemaining = 0;
   static bool     blinkOn = true;
   static uint32_t lastBlinkMs = 0;
 
   const int N = SHIFT_LED_COUNT;
 
-  // ── Engine running takes precedence: two center LEDs orange ────────────
+  // Engine running → center pair orange
   if (rpm > SHIFT_RPM_ON_THRESH) {
-    shiftStrip.clear();
+    for (int i=0;i<N;i++) shiftStrip.setPixelColor(i, 0);
     if (N >= 2) {
-      int left  = (N / 2) - 1;   // for N=8 → 3
-      int right =  N / 2;        //            4
+      int left  = (N / 2) - 1;
+      int right =  N / 2;
       shiftStrip.setPixelColor(left,  ENGINE_INDICATOR_COLOR);
       shiftStrip.setPixelColor(right, ENGINE_INDICATOR_COLOR);
     } else if (N == 1) {
       shiftStrip.setPixelColor(0, ENGINE_INDICATOR_COLOR);
     }
-    shiftStrip.show();
-
-    // reset warn/blink state so it re-arms cleanly when ICE turns off
     wasInWarn = false; blinksRemaining = 0; blinkOn = true;
+    led_mark_dirty();
     return;
   }
 
-  // ── Regen branch (ebar < 0): blue, fill right→left, immediate ──────────
+  // Regen (blue) right→left
   if (ebar_raw < 0) {
-    int mag = -ebar_raw;                 // 0..100
-    if (mag > 100) mag = 100;
-    int lit = (mag * N) / 100;           // 0..N
-
+    int mag = -ebar_raw; if (mag > 100) mag = 100;
+    int lit = (mag * N) / 100;
     for (int i=0;i<N;i++) shiftStrip.setPixelColor(i, 0);
     for (int k=0; k<lit; ++k) {
-      int idx = (N-1) - k;               // right→left
-      shiftStrip.setPixelColor(idx, RGB(0,80,255)); // blue
+      int idx = (N-1) - k;
+      shiftStrip.setPixelColor(idx, RGB(0,80,255));
     }
-    shiftStrip.show();
-
-    // don’t arm the positive-power blink logic from regen
     wasInWarn = false; blinksRemaining = 0; blinkOn = true;
+    led_mark_dirty();
     return;
   }
 
-  // ── Positive-power “approach 50” behavior (no smoothing) ───────────────
-  int ebar_pos = ebar_raw > 0 ? ebar_raw : 0;
-  if (ebar_pos > 100) ebar_pos = 100;
-
-  // warn window with hysteresis
+  // Positive accel (warn near 48)
+  int ebar_pos = ebar_raw > 0 ? ebar_raw : 0; if (ebar_pos > 100) ebar_pos = 100;
   bool inWarnNow = (!wasInWarn) ? (ebar_pos >= EBAR_WARN_ON)
                                 : (ebar_pos >  EBAR_WARN_OFF);
 
-  // on rising edge, start a short blink burst
   if (inWarnNow && !wasInWarn) {
     blinksRemaining = BLINK_TOGGLES_MAX;
     blinkOn = true;
@@ -428,26 +363,18 @@ void updateShiftStrip(int8_t ebar_raw, float rpm) {
     uint32_t period = (ebar_pos >= 50) ? BLINK_PERIOD_OVER_MS : BLINK_PERIOD_NEAR_MS;
     if (blinksRemaining > 0) {
       uint32_t now = millis();
-      if (now - lastBlinkMs >= period) {
-        lastBlinkMs = now;
-        blinkOn = !blinkOn;
-        blinksRemaining--;
-      }
+      if (now - lastBlinkMs >= period) { lastBlinkMs = now; blinkOn = !blinkOn; blinksRemaining--; }
       uint32_t c = blinkOn ? RGB(255,0,0) : RGB(40,0,0);
       for (int i=0;i<N;i++) shiftStrip.setPixelColor(i, c);
-      shiftStrip.show();
-      return;
     } else {
       for (int i=0;i<N;i++) shiftStrip.setPixelColor(i, RGB(255,0,0));
-      shiftStrip.show();
-      return;
     }
+    led_mark_dirty();
+    return;
   }
 
-  // below warn: progressive fill (green→yellow→orange→red), left→right
-  int lit = (ebar_pos * N) / EBAR_WARN_ON;   // map 0..48 → 0..N
-  if (lit < 0) lit = 0; if (lit > N) lit = N;
-
+  // Below warn: progressive fill
+  int lit = (ebar_pos * N) / EBAR_WARN_ON; if (lit < 0) lit = 0; if (lit > N) lit = N;
   for (int i=0;i<N;i++) {
     if (i < lit) {
       uint32_t c =
@@ -460,13 +387,37 @@ void updateShiftStrip(int8_t ebar_raw, float rpm) {
       shiftStrip.setPixelColor(i, 0);
     }
   }
-  shiftStrip.show();
+  led_mark_dirty();
 }
 
+// ──────────────────────────────────────────────────────────────
+// Brightness
+// ──────────────────────────────────────────────────────────────
+uint8_t ui_brightness_pct = 60;
 
+void setShiftStripBrightness(uint8_t pct) {
+  if (pct > 100) pct = 100;
+  ui_brightness_pct = pct;
+  uint8_t neo = map(pct, 0, 100, 0, 255);
+  shiftStrip.setBrightness(neo); // applies on next show()
+}
 
+#define BL_PIN        2
+#define BL_CH         0
+#define BL_FREQ       20000
+#define BL_RES_BITS   10
 
+void setBacklightPct(uint8_t pct) {
+  if (pct > 100) pct = 100;
+  uint32_t duty = (uint32_t)pct * ((1 << BL_RES_BITS) - 1) / 100;
+  ledcWrite(BL_CH, duty);
+}
 
+void backlightInit() {
+  ledcSetup(BL_CH, BL_FREQ, BL_RES_BITS);
+  ledcAttachPin(BL_PIN, BL_CH);
+  setBacklightPct(10);
+}
 
 // ──────────────────────────────────────────────────────────────
 // SETUP / LOOP
@@ -474,27 +425,15 @@ void updateShiftStrip(int8_t ebar_raw, float rpm) {
 void setup() {
   Serial.begin(115200);
 
-    // ---- UART link init (display side) ----
   LINK.begin(LINK_BAUD, SERIAL_8N1, LINK_RX, LINK_TX);
   Serial.printf("UART link on Serial2 @ %lu, RX=%d TX=%d\n",
                 (unsigned long)LINK_BAUD, LINK_RX, LINK_TX);
 
-
-  Serial.println("Start: LVGL + EEZ (UI-only) — high-FPS SI-hardened (LVGL v8)");
-
-  // Strengthen drive BEFORE lcd.begin()
   set_rgb_drive_strength();
 
-  // lcd.setRotation(2);
   lcd.begin();
-  // pinMode(GFX_BL, OUTPUT);
-  // digitalWrite(GFX_BL, HIGH);
-  // lcd.fillRect(0, 0, 240, 240, 0x07E0 /* pure green in RGB565 */);
-  // delay(300);
-  // lcd.clear();
   backlightInit();
 
-  // delay(1000);
   lv_init();
 
   screenWidth  = lcd.width();
@@ -513,265 +452,221 @@ void setup() {
   disp_drv.draw_buf = &draw_buf;
   lv_disp_t *disp = lv_disp_drv_register(&disp_drv);
 
-  // v8.x: tighten the internal refresh timer to ~10 ms
-  lv_timer_t *refr = _lv_disp_get_refr_timer(disp);   // internal getter is available in v8
+  // tighten internal refresh timer to ~10 ms
+  lv_timer_t *refr = _lv_disp_get_refr_timer(disp);
   if (refr) lv_timer_set_period(refr, 10);
 
-  // 5ms LVGL tick (hardware timer)
+  // 5ms LVGL tick
   lv_tick_timer = timerBegin(0, 80, true); // 80 MHz / 80 = 1 MHz
   timerAttachInterrupt(lv_tick_timer, &onLvglTick, true);
-  timerAlarmWrite(lv_tick_timer, 5000, true); // 5000 us = 5 ms
+  timerAlarmWrite(lv_tick_timer, 5000, true);
   timerAlarmEnable(lv_tick_timer);
 
-  delay(200);
   ui_init();
-  // inspect_active_screen();
-
-  // Print expected FPS with current totals (928 x 525)
-  // const uint32_t Htot = 800 + 40 + 48 + 40;
-  // const uint32_t Vtot = 480 + 1  + 31 + 13;
-  // float fps = (float)PCLK_HZ / (float)(Htot * Vtot);
-  // Serial.printf("Timing: PCLK=%lu Hz, Htot=%lu, Vtot=%lu -> FPS≈%.2f\n",
-  //               (unsigned long)PCLK_HZ, (unsigned long)Htot, (unsigned long)Vtot, fps);
-
-
 
   shiftStrip.begin();
   shiftStrip.setBrightness(255);
   shiftStrip.clear();
   shiftStrip.show();
-
 }
 
-// define colors ahead of time, for consistency
-lv_color_t g_green = lv_color_hex(0x00ff26);
-lv_color_t g_blue = lv_color_hex(0x00ffff);
+// define colors ahead of time
+lv_color_t g_green  = lv_color_hex(0x00ff26);
+lv_color_t g_blue   = lv_color_hex(0x00ffff);
 lv_color_t g_orange = lv_color_hex(0xFCA200);
-lv_color_t g_red = lv_color_hex(0xFD0000);
+lv_color_t g_red    = lv_color_hex(0xFD0000);
 lv_color_t g_yellow = lv_color_hex(0xE9E800);
 
+// prev-value cache for change guards
+static int      prev_rpm = INT_MIN;
+static int      prev_watts = INT_MIN;
+static int      prev_kw_start = INT_MIN;
+static int      prev_kw_value = INT_MIN;
+static uint8_t  prev_kw_sign = 255;
+
+static int      prev_soc = INT_MIN;
+static uint8_t  prev_soc_band = 255;
+
+static int      prev_btF = INT_MIN;        // rounded F° for label
+static uint8_t  prev_bt_band = 255;
+
+static int      prev_intakeF = INT_MIN;
+static uint8_t  prev_intake_band = 255;
+
+static int      prev_bfs = INT_MIN;
+static uint8_t  prev_bfor = 255;
+
+static int      prev_bt1c = INT_MIN;       // centi-F (x100)
+static int      prev_bt2c = INT_MIN;
+static int      prev_bt3c = INT_MIN;
+
+static int      prev_batt_v = INT_MIN;
+static int      prev_batt_a = INT_MIN;
+
+static uint8_t  prev_dim = 255;
+
+static int      prev_ebar = INT_MIN;
+static int      prev_est  = INT_MIN;
 
 void loop() {
   lv_timer_handler();
-
-  // ---- pump UART ----
   pollUart();
 
-  // ---- UI update cadence (every ~50 ms) ----
+  // UI update cadence (every ~50 ms)
   static unsigned long lastUi = 0;
   unsigned long now = millis();
   if (now - lastUi >= 50) {
     lastUi = now;
 
-    // If data is fresh (< 500 ms since last packet), show it; otherwise dim/fallback
     bool fresh = (now - lastRxMs) < 500;
-
     if (fresh) {
-
-
-      // RPM bar
-      int rpm_val = (int)roundf(lastPacket.rpm);
-      rpm_val = constrain(rpm_val, 0, 100000); // guard
-      lv_bar_set_value(objects.rpm_bar, rpm_val, LV_ANIM_OFF);
-      lv_label_set_text_fmt(objects.rpm_label, "%d\nRPM", rpm_val);
-
-
-      // Watts bar
-      int watts = round((lastPacket.hv_voltage_V * lastPacket.hv_current_A));
-      // change direction of meter based on watts in (negative) or watts out (positive)
-      if(watts >= 0) {
-        // if watts out start bar from bottom, change color to green
-        lv_bar_set_start_value(objects.kw_watts_bar, -20000, LV_ANIM_OFF);
-        lv_bar_set_value(objects.kw_watts_bar, (watts - 20000), LV_ANIM_OFF);
-        lv_obj_set_style_bg_color(objects.kw_watts_bar, lv_color_hex(0x00ff26), LV_PART_INDICATOR);
-        lv_obj_set_style_opa(objects.kw_watts_bar, LV_OPA_COVER, LV_PART_INDICATOR);
-      } else {
-        // if watts in start bar from top, change color to blue
-        lv_bar_set_value(objects.kw_watts_bar, 20000, LV_ANIM_OFF);
-        lv_bar_set_start_value(objects.kw_watts_bar, (watts + 20000), LV_ANIM_OFF);
-        lv_obj_set_style_bg_color(objects.kw_watts_bar, lv_color_hex(0x00ffff), LV_PART_INDICATOR);
-        lv_obj_set_style_opa(objects.kw_watts_bar, LV_OPA_COVER, LV_PART_INDICATOR);
-      }
-      // label it in kW though
-      float kW = (watts / 1000.0f);
-      char kw_buf[16];
-      snprintf(kw_buf, sizeof(kw_buf), "%.2f\nkW", kW);
-      lv_label_set_text(objects.kw_label, kw_buf);
-
-
-      // battery soc and temp panel
-      int battery_soc_rnd = (int)roundf(lastPacket.soc_pct);
-      // Serial.println("battery soc" + String(battery_soc));
-      lv_label_set_text_fmt(objects.battery_soc, "%d%%\nSoC", battery_soc_rnd);
-      // set backround of objects.battery_info_panel based on soc:
-      if (battery_soc_rnd < 45) {
-        lv_obj_set_style_bg_color(objects.battery_info_panel, g_red, LV_PART_MAIN);
-        lv_obj_set_style_opa(objects.battery_info_panel, LV_OPA_COVER, LV_PART_MAIN);
-      } else if (battery_soc_rnd < 50) {
-        lv_obj_set_style_bg_color(objects.battery_info_panel, g_orange, LV_PART_MAIN);
-        lv_obj_set_style_opa(objects.battery_info_panel, LV_OPA_COVER, LV_PART_MAIN);
-      } else if (battery_soc_rnd < 60) {
-        lv_obj_set_style_bg_color(objects.battery_info_panel, g_yellow, LV_PART_MAIN);
-        lv_obj_set_style_opa(objects.battery_info_panel, LV_OPA_COVER, LV_PART_MAIN);
-      } else {
-        lv_obj_set_style_bg_color(objects.battery_info_panel, g_blue, LV_PART_MAIN);
-        lv_obj_set_style_opa(objects.battery_info_panel, LV_OPA_COVER, LV_PART_MAIN);
+      // ===== RPM =====
+      int rpm_val = (int)lrintf(lastPacket.rpm);
+      rpm_val = constrain(rpm_val, 0, 100000);
+      if (changed(prev_rpm, rpm_val)) {
+        lv_bar_set_value(objects.rpm_bar, rpm_val, LV_ANIM_OFF);
+        lv_label_set_text_fmt(objects.rpm_label, "%d\nRPM", rpm_val);
       }
 
+      // ===== Watts bar & label =====
+      int watts = (int)lrintf(lastPacket.hv_voltage_V * lastPacket.hv_current_A);
+      uint8_t sign = (watts >= 0) ? 1 : 0;
 
-      // temp
-      // average battery temps into one number
+      if (changed(prev_kw_sign, sign)) {
+        if (sign) {
+          lv_obj_set_style_bg_color(objects.kw_watts_bar, g_green, LV_PART_INDICATOR);
+          lv_obj_set_style_opa(objects.kw_watts_bar, LV_OPA_COVER, LV_PART_INDICATOR);
+        } else {
+          lv_obj_set_style_bg_color(objects.kw_watts_bar, g_blue, LV_PART_INDICATOR);
+          lv_obj_set_style_opa(objects.kw_watts_bar, LV_OPA_COVER, LV_PART_INDICATOR);
+        }
+      }
+
+      if (changed(prev_watts, watts)) {
+        if (sign) {
+          int start = -20000;
+          int val   = watts - 20000;
+          if (changed(prev_kw_start, start)) lv_bar_set_start_value(objects.kw_watts_bar, start, LV_ANIM_OFF);
+          if (changed(prev_kw_value, val))   lv_bar_set_value(objects.kw_watts_bar, val, LV_ANIM_OFF);
+        } else {
+          int start = watts + 20000;
+          int val   = 20000;
+          if (changed(prev_kw_start, start)) lv_bar_set_start_value(objects.kw_watts_bar, start, LV_ANIM_OFF);
+          if (changed(prev_kw_value, val))   lv_bar_set_value(objects.kw_watts_bar, val, LV_ANIM_OFF);
+        }
+
+        // kW label (centi-kW = W/10)
+        int kw_centi = (int)lrintf(watts / 10.0f);
+        label_set_centi(objects.kw_label, kw_centi, "\nkW");
+      }
+
+      // ===== Battery SoC panel =====
+      int soc_r = (int)lrintf(lastPacket.soc_pct);
+      if (changed(prev_soc, soc_r)) {
+        lv_label_set_text_fmt(objects.battery_soc, "%d%%\nSoC", soc_r);
+      }
+      uint8_t soc_band =
+        (soc_r < 45) ? 0 :
+        (soc_r < 50) ? 1 :
+        (soc_r < 60) ? 2 : 3;
+      if (changed(prev_soc_band, soc_band)) {
+        lv_color_t c = (soc_band==0)?g_red:(soc_band==1)?g_orange:(soc_band==2)?g_yellow:g_blue;
+        lv_obj_set_style_bg_color(objects.battery_info_panel, c, LV_PART_MAIN);
+        lv_obj_set_style_opa(objects.battery_info_panel, LV_OPA_COVER, LV_PART_MAIN);
+      }
+
+      // ===== Battery temp (avg) integer label + banded color =====
       float battery_temp_avg = (lastPacket.tb1_C + lastPacket.tb2_C + lastPacket.tb3_C) / 3.0f;
-      // Serial.println("battery temp avg: " + String(battery_temp_avg, 2));
-      float battery_temp_f = c_to_f(battery_temp_avg);
-      int battery_temp_f_round = (int)roundf(battery_temp_f);
-      lv_label_set_text_fmt(objects.battery_temp, "%d°", battery_temp_f_round);
-      // set color based on temp in F:
-      if (battery_temp_f < 60) {
-        lv_obj_set_style_bg_color(objects.battery_temp, g_blue, LV_PART_MAIN);
-        lv_obj_set_style_opa(objects.battery_temp, LV_OPA_COVER, LV_PART_MAIN);
-      } else if (battery_temp_f < 80) {
-        lv_obj_set_style_bg_color(objects.battery_temp, g_green, LV_PART_MAIN);
-        lv_obj_set_style_opa(objects.battery_temp, LV_OPA_COVER, LV_PART_MAIN);
-      } else if (battery_temp_f < 90) {
-        lv_obj_set_style_bg_color(objects.battery_temp, g_yellow, LV_PART_MAIN);
-        lv_obj_set_style_opa(objects.battery_temp, LV_OPA_COVER, LV_PART_MAIN);
-      } else if (battery_temp_f < 100) {
-        lv_obj_set_style_bg_color(objects.battery_temp, g_orange, LV_PART_MAIN);
-        lv_obj_set_style_opa(objects.battery_temp, LV_OPA_COVER, LV_PART_MAIN);
-      } else {
-        lv_obj_set_style_bg_color(objects.battery_temp, g_red, LV_PART_MAIN);
+      int btF_round = (int)lrintf(c_to_f(battery_temp_avg));
+      if (changed(prev_btF, btF_round)) {
+        lv_label_set_text_fmt(objects.battery_temp, "%d°", btF_round);
+      }
+      uint8_t bt_band =
+        (btF_round < 60) ? 0 :
+        (btF_round < 80) ? 1 :
+        (btF_round < 90) ? 2 :
+        (btF_round < 100)? 3 : 4;
+      if (changed(prev_bt_band, bt_band)) {
+        lv_color_t c = (bt_band==0)?g_blue:(bt_band==1)?g_green:(bt_band==2)?g_yellow:(bt_band==3)?g_orange:g_red;
+        lv_obj_set_style_bg_color(objects.battery_temp, c, LV_PART_MAIN);
         lv_obj_set_style_opa(objects.battery_temp, LV_OPA_COVER, LV_PART_MAIN);
       }
 
-      // battery fan info panel
-      float intake_temp_f = c_to_f(lastPacket.hv_intake_C);
-      int intake_temp_f_round = (int)roundf(intake_temp_f);
-      lv_label_set_text_fmt(objects.battery_intake_temp, "%d°\nIntake", intake_temp_f_round);
-      // set color of panel based on intake temp in F:
-      if (intake_temp_f < 60) {
-        lv_obj_set_style_bg_color(objects.battery_fan_info_panel, g_blue, LV_PART_MAIN);
-        lv_obj_set_style_opa(objects.battery_fan_info_panel, LV_OPA_COVER, LV_PART_MAIN);
-      } else if (intake_temp_f < 80) {
-        lv_obj_set_style_bg_color(objects.battery_fan_info_panel, g_green, LV_PART_MAIN);
-        lv_obj_set_style_opa(objects.battery_fan_info_panel, LV_OPA_COVER, LV_PART_MAIN);
-      } else if (intake_temp_f < 90) {
-        lv_obj_set_style_bg_color(objects.battery_fan_info_panel, g_yellow, LV_PART_MAIN);
-        lv_obj_set_style_opa(objects.battery_fan_info_panel, LV_OPA_COVER, LV_PART_MAIN);
-      } else if (intake_temp_f < 100) {
-        lv_obj_set_style_bg_color(objects.battery_fan_info_panel, g_orange, LV_PART_MAIN);
-        lv_obj_set_style_opa(objects.battery_fan_info_panel, LV_OPA_COVER, LV_PART_MAIN);
-      } else {
-        lv_obj_set_style_bg_color(objects.battery_fan_info_panel, g_red, LV_PART_MAIN);
+      // ===== Intake temp integer label + banded color =====
+      int intakeF_round = (int)lrintf(c_to_f(lastPacket.hv_intake_C));
+      static int prev_intake_label = INT_MIN;
+      if (changed(prev_intake_label, intakeF_round)) {
+        lv_label_set_text_fmt(objects.battery_intake_temp, "%d°\nIntake", intakeF_round);
+      }
+      uint8_t intake_band =
+        (intakeF_round < 60) ? 0 :
+        (intakeF_round < 80) ? 1 :
+        (intakeF_round < 90) ? 2 :
+        (intakeF_round < 100)? 3 : 4;
+      if (changed(prev_intake_band, intake_band)) {
+        lv_color_t c = (intake_band==0)?g_blue:(intake_band==1)?g_green:(intake_band==2)?g_yellow:(intake_band==3)?g_orange:g_red;
+        lv_obj_set_style_bg_color(objects.battery_fan_info_panel, c, LV_PART_MAIN);
         lv_obj_set_style_opa(objects.battery_fan_info_panel, LV_OPA_COVER, LV_PART_MAIN);
       }
-      
 
-      // change battery fan speed and control LED
-      int bfs = (int)roundf(lastPacket.bfs);
-      // lv_label_set_text(objects.battery_fan_speed, bfs);
-      lv_label_set_text_fmt(objects.battery_fan_speed, "S: %d", bfs);
-      if (lastPacket.bfor) {
-        lv_obj_set_style_bg_color(objects.battery_fan_control, g_green, LV_PART_MAIN);
-        lv_obj_set_style_opa(objects.battery_fan_control, LV_OPA_COVER, LV_PART_MAIN);
-        lv_label_set_text(objects.fan_control_label, "Control\nEnabled");
-        // Serial.println("turning fan LED on");
-        // lv_led_on(objects.battery_fan_control);
-      } else {
-        lv_obj_set_style_bg_color(objects.battery_fan_control, g_red, LV_PART_MAIN);
-        lv_obj_set_style_opa(objects.battery_fan_control, LV_OPA_COVER, LV_PART_MAIN);
-        lv_label_set_text(objects.fan_control_label, "Control\nDisabled");
-        // Serial.println("turning fan LED off");
-        // lv_led_off(objects.battery_fan_control);
+      // ===== Battery fan info =====
+      int bfs = (int)lrintf(lastPacket.bfs);
+      if (changed(prev_bfs, bfs)) {
+        lv_label_set_text_fmt(objects.battery_fan_speed, "S: %d", bfs);
+      }
+      uint8_t bfor = lastPacket.bfor ? 1 : 0;
+      if (changed(prev_bfor, bfor)) {
+        if (bfor) {
+          lv_obj_set_style_bg_color(objects.battery_fan_control, g_green, LV_PART_MAIN);
+          lv_obj_set_style_opa(objects.battery_fan_control, LV_OPA_COVER, LV_PART_MAIN);
+          lv_label_set_text(objects.fan_control_label, "Control\nEnabled");
+        } else {
+          lv_obj_set_style_bg_color(objects.battery_fan_control, g_red, LV_PART_MAIN);
+          lv_obj_set_style_opa(objects.battery_fan_control, LV_OPA_COVER, LV_PART_MAIN);
+          lv_label_set_text(objects.fan_control_label, "Control\nDisabled");
+        }
       }
 
-      // set the three battery temps:
-      float bt1f = c_to_f(lastPacket.tb1_C);
-      float bt2f = c_to_f(lastPacket.tb2_C);
-      float bt3f = c_to_f(lastPacket.tb3_C);
+      // ===== Three battery temps (two decimals, no %f) =====
+      int bt1c = (int)lrintf(c_to_f(lastPacket.tb1_C) * 100.0f);
+      int bt2c = (int)lrintf(c_to_f(lastPacket.tb2_C) * 100.0f);
+      int bt3c = (int)lrintf(c_to_f(lastPacket.tb3_C) * 100.0f);
+      if (changed(prev_bt1c, bt1c)) label_set_centi(objects.bt1, bt1c, "°");
+      if (changed(prev_bt2c, bt2c)) label_set_centi(objects.bt2, bt2c, "°");
+      if (changed(prev_bt3c, bt3c)) label_set_centi(objects.bt3, bt3c, "°");
 
-      // float kW = (watts / 1000.0f);
-      // char kw_buf[16];
-      // snprintf(kw_buf, sizeof(kw_buf), "%.2f\nkW", kW);
-      // lv_label_set_text(objects.kw_label, kw_buf);
+      // ===== Battery V/A integer labels =====
+      int battery_voltage = (int)lrintf(lastPacket.hv_voltage_V);
+      int battery_amperage = (int)lrintf(lastPacket.hv_current_A);
+      if (changed(prev_batt_v, battery_voltage)) lv_label_set_text_fmt(objects.battery_voltage, "%dV", battery_voltage);
+      if (changed(prev_batt_a, battery_amperage)) lv_label_set_text_fmt(objects.battery_amperage, "%dA", battery_amperage);
 
-      char bt_buf[16];
-      snprintf(bt_buf, sizeof(bt_buf), "%.2f°", bt1f);
-      lv_label_set_text(objects.bt1, bt_buf);
-      snprintf(bt_buf, sizeof(bt_buf), "%.2f°", bt2f);
-      lv_label_set_text(objects.bt2, bt_buf);
-      snprintf(bt_buf, sizeof(bt_buf), "%.2f°", bt3f);
-      lv_label_set_text(objects.bt3, bt_buf);
+      // ===== Shift LED strip =====
+      updateShiftStrip(lastPacket.ebar, (float)rpm_val);
+      led_maybe_show();  // single WS2812 transfer per frame
 
-      int battery_voltage = round((lastPacket.hv_voltage_V));
-      int battery_amperage = round((lastPacket.hv_current_A));
-      lv_label_set_text_fmt(objects.battery_voltage, "%dV", battery_voltage);
-      lv_label_set_text_fmt(objects.battery_amperage, "%dA", battery_amperage);
-
-
-      // if(rpm_val == 0) {
-      //   lv_label_set_text(objects.ebar_testing, String(lastPacket.ebar).c_str());
-      // }
-
-      updateShiftStrip(lastPacket.ebar, rpm_val);
-
-
-      if (lastPacket.dim) {
-        setBacklightPct(30);    // dim
-        setShiftStripBrightness(5);
-        Serial.println("dimming");
-      } else {
-        setBacklightPct(100);    // normal
-        setShiftStripBrightness(50);
-        Serial.println("bright");
+      // ===== Dimming (on change) =====
+      uint8_t dim_now = lastPacket.dim ? 1 : 0;
+      if (changed(prev_dim, dim_now)) {
+        if (dim_now) { setBacklightPct(30); setShiftStripBrightness(5); }
+        else          { setBacklightPct(100); setShiftStripBrightness(50); }
       }
 
-      // ebar and drain mode
-      int ebar_round = (int)roundf(lastPacket.ebar);
-      int drain_round = (int)roundf(lastPacket.est);
+      // ===== Ebar & drain labels (on change) =====
+      int ebar_round = (int)lrintf(lastPacket.ebar);
+      if (changed(prev_ebar, ebar_round)) {
+        lv_label_set_text_fmt(objects.ebar_label, "Ebar: %d", ebar_round);
+        // update ebar bar
+        lv_bar_set_value(objects.ebar_bar, ebar_round, LV_ANIM_OFF);
+      };
+\
+      int drain_round = (int)lrintf(lastPacket.est);
+      if (changed(prev_est, drain_round)) lv_label_set_text_fmt(objects.energy_drain, "Mode: %d", drain_round);
 
-      lv_label_set_text_fmt(objects.ebar_label, "Ebar: %d", ebar_round);
-      lv_label_set_text_fmt(objects.energy_drain, "Mode: %d", drain_round);
 
-
-
-      // kW (approx = V * I / 1000); negative allowed => regen
-      // float kW = lastPacket.hv_voltage_V * lastPacket.hv_current_A / 1000.0f;
-      // Map to your bar’s range [0..50] or symmetric if you prefer
-      // int kw_bar_scaled = (int)roundf(kW * 100);                 // simple: -?
-
-      // Serial.println("EEZ: kW = " + String(kW, 2) + " (" + String(kw_bar_scaled) + ")");
-
-      // if(kW >= 0) {
-        // if positive kw, start bar from bottom
-        // lv_bar_set_start_value(objects.kw_bar, -300, LV_ANIM_OFF);
-        // lv_bar_set_value(objects.kw_bar, kw_bar_scaled, LV_ANIM_OFF);
-      // } else {
-        // if negative kw, start bar from top
-      //   lv_bar_set_start_value(objects.kw_bar, kw_bar_scaled, LV_ANIM_OFF);
-      //   lv_bar_set_value(objects.kw_bar, 300, LV_ANIM_OFF);
-      // }
-
-      // lv_label_set_text_fmt(objects.kw_label, "%.2f\nkW", kW);
-      
-      // kw_bar = constrain(kw_bar, -50, 50);
-      // If your bar only supports 0..50, offset negatives:
-      // int kw_bar_u = kw_bar + 50;                   // 0..100
-      // lv_bar_set_range(objects.kw_bar, 0, 100);
-      // lv_bar_set_value(objects.kw_bar, kw_bar_u, LV_ANIM_OFF);
-      // lv_label_set_text_fmt(objects.kw_label, "%.1f\nkW", kW);
-
-      // (Add more bindings as needed)
-      // e.g., coolant, SOC, temps:
-      // lv_label_set_text_fmt(objects.coolant_label, "%.1f°C", lastPacket.ect_C);
-      // lv_bar_set_value(objects.soc_bar, (int)roundf(lastPacket.soc_pct), LV_ANIM_OFF);
 
     } else {
-      // stale: optionally gray-out or show placeholders
-      // Example: keep last values but set a subtle status somewhere
-      // lv_obj_add_state(objects.rpm_bar, LV_STATE_DISABLED);
-      // lv_obj_add_state(objects.kw_bar, LV_STATE_DISABLED);
+      // stale: optional handling (no-op)
     }
   }
 }
-
