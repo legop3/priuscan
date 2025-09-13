@@ -478,6 +478,8 @@ lv_color_t g_red    = lv_color_hex(0xFD0000);
 lv_color_t g_yellow = lv_color_hex(0xE9E800);
 
 // prev-value cache for change guards
+// static bool     prev_data_state = false;
+
 static int      prev_rpm = INT_MIN;
 static int      prev_watts = INT_MIN;
 static int      prev_kw_start = INT_MIN;
@@ -520,6 +522,8 @@ void loop() {
 
     bool fresh = (now - lastRxMs) < 500;
     if (fresh) {
+      lv_obj_add_flag(objects.no_data_label, LV_OBJ_FLAG_HIDDEN);
+
       // ===== RPM =====
       int rpm_val = (int)lrintf(lastPacket.rpm);
       rpm_val = constrain(rpm_val, 0, 100000);
@@ -667,6 +671,7 @@ void loop() {
 
     } else {
       // stale: optional handling (no-op)
+      lv_obj_clear_flag(objects.no_data_label, LV_OBJ_FLAG_HIDDEN);
     }
   }
 }

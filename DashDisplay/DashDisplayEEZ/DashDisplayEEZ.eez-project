@@ -1506,6 +1506,60 @@
               },
               "group": "",
               "groupIndex": 0
+            },
+            {
+              "objID": "08dde599-1092-45f0-f4a3-df6267227ca7",
+              "type": "LVGLLabelWidget",
+              "left": 63,
+              "top": 202,
+              "width": 667,
+              "height": 52,
+              "customInputs": [],
+              "customOutputs": [],
+              "style": {
+                "objID": "fb156723-23ff-46b3-8fe0-f4d71cc7756b",
+                "useStyle": "default",
+                "conditionalStyles": [],
+                "childStyles": []
+              },
+              "timeline": [],
+              "eventHandlers": [],
+              "identifier": "no data label",
+              "leftUnit": "px",
+              "topUnit": "px",
+              "widthUnit": "content",
+              "heightUnit": "content",
+              "children": [],
+              "widgetFlags": "CLICK_FOCUSABLE|GESTURE_BUBBLE|PRESS_LOCK|SCROLLABLE|SCROLL_CHAIN_HOR|SCROLL_CHAIN_VER|SCROLL_ELASTIC|SCROLL_MOMENTUM|SCROLL_WITH_ARROW|SNAPPABLE",
+              "hiddenFlagType": "literal",
+              "clickableFlagType": "literal",
+              "flagScrollbarMode": "",
+              "flagScrollDirection": "",
+              "scrollSnapX": "",
+              "scrollSnapY": "",
+              "checkedStateType": "literal",
+              "disabledStateType": "literal",
+              "states": "",
+              "localStyles": {
+                "objID": "08e403ce-a000-402c-e743-d2529745ba2e",
+                "definition": {
+                  "MAIN": {
+                    "DEFAULT": {
+                      "bg_color": "#ff0000",
+                      "bg_opa": 255,
+                      "text_font": "MONTSERRAT_48",
+                      "outline_width": 5,
+                      "outline_color": "#1e00ff"
+                    }
+                  }
+                }
+              },
+              "group": "",
+              "groupIndex": 0,
+              "text": "NO DATA FROM DECODER",
+              "textType": "literal",
+              "longMode": "WRAP",
+              "recolor": false
             }
           ],
           "widgetFlags": "CLICKABLE|PRESS_LOCK|CLICK_FOCUSABLE|GESTURE_BUBBLE|SNAPPABLE|SCROLLABLE|SCROLL_ELASTIC|SCROLL_MOMENTUM|SCROLL_CHAIN_HOR|SCROLL_CHAIN_VER",

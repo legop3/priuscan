@@ -345,6 +345,20 @@ void create_screen_main() {
                 }
             }
         }
+        {
+            // no data label
+            lv_obj_t *obj = lv_label_create(parent_obj);
+            objects.no_data_label = obj;
+            lv_obj_set_pos(obj, 63, 202);
+            lv_obj_set_size(obj, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+            add_style_text_readable(obj);
+            lv_obj_set_style_bg_color(obj, lv_color_hex(0xffff0000), LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_set_style_bg_opa(obj, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_set_style_text_font(obj, &lv_font_montserrat_48, LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_set_style_outline_width(obj, 5, LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_set_style_outline_color(obj, lv_color_hex(0xff1e00ff), LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_label_set_text(obj, "NO DATA FROM DECODER");
+        }
     }
     
     tick_screen_main();

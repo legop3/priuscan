@@ -32,6 +32,7 @@ typedef struct _objects_t {
     lv_obj_t *ebar_bar;
     lv_obj_t *ebar_label;
     lv_obj_t *energy_drain;
+    lv_obj_t *no_data_label;
 } objects_t;
 
 extern objects_t objects;
