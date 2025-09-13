@@ -236,7 +236,13 @@ void setup() {
 
     CAN0.setCANPins(GPIO_NUM_4, GPIO_NUM_5);
     CAN0.begin(500000); // 500Kbps
-    CAN0.watchFor();
+
+    // CAN0.watchFor();
+
+    CAN0.watchFor(0x1C4); // engine RPM
+    CAN0.watchFor(0x247); // energy bar + state_energy_drain
+    CAN0.watchFor(0x620); // dashboard brightness + dim state
+    CAN0.watchFor(0x7EA); // multi-frame responses go here
 
     Serial.println(" CAN............500Kbps");
 
@@ -566,7 +572,7 @@ void loop() {
 
     // STEP 4: Serial output
     static unsigned long lastPrintTime = 0;
-    if (currentTime - lastPrintTime >= 50) {
+    if (currentTime - lastPrintTime >= 30) {
         // Serial.print(F("RPM: "));       Serial.print(g_sensors[IDX_RPM]);            Serial.print(' ');
         // Serial.print(F("Bat I: "));     Serial.print(g_sensors[IDX_HV_CURRENT], 2);  Serial.print(F("A "));
         // Serial.print(F("Bat V: "));     Serial.print(g_sensors[IDX_HV_VOLTAGE], 1);  Serial.print(F("V "));
