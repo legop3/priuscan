@@ -1,7 +1,16 @@
 #include <Arduino.h>
 #include <esp32_can.h> /* https://github.com/collin80/esp32_can */
+#include <WiFi.h>
+#include <esp_now.h>
 
 #define SHIELD_LED_PIN 26
+
+// MAC address of the indicator ESP
+uint8_t PEER_MAC[] = {0x34, 0x98, 0x7A, 0x5D, 0xDE, 0xF8};
+// globals for esp-now stuff
+uint8_t last_on = 0xFF;
+unsigned long last_send = 0;
+
 
 // ====== SIMPLE UART: FLOATS, NO SCALING ======
 #include <HardwareSerial.h>
@@ -251,6 +260,16 @@ void setup() {
     txFrame.rtr = false;
 
     initDisplayUart();
+
+    // new esp-now stuff
+    WiFi.mode(WIFI_STA);
+    esp_now_init();
+    esp_now_peer_info_t peer = {};
+    memcpy(peer.peer_addr, PEER_MAC, 6);
+    peer.channel = 0; // use current channel
+    peer.encrypt = false;
+    esp_now_add_peer(&peer);
+    Serial.println(" ESP-NOW.............INIT");
 }
 
 ////////////////////////////////////////////////////////////main loop//////////////////////////////////////////////////////////
@@ -594,4 +613,16 @@ void loop() {
         sendSensorsFloat();
         lastPrintTime = currentTime;
     }
+
+    // STEP 5: ESP-NOW send
+    unsigned long now = millis();
+    uint8_t on = (g_sensors[IDX_RPM] > 500.0f) ? 1 : 0;
+
+    if (on != last_on || (now - last_send) >= 1000) {
+        esp_now_send(PEER_MAC, &on, sizeof(on));
+        last_on = on;
+        last_send = now;
+        Serial.print("ESP-NOW send: "); Serial.println(on);
+    }
+
 }
