@@ -36,6 +36,8 @@ Engine RPM: 0x1C4
 Eco and PWR mode: 0x3BC
 EV MODE: 0X49B
 
+0x610: dimmer knob
+
 brake pedal but NOT break lights: 0x361
 brake pedal position: 0x224
 
@@ -108,6 +110,9 @@ send a CAN frame assembled manually:
 reading from CAN:
   - dash brightness knob (all the way down = off signal)
   - EV mode enable
+  - Eco and PWR mode: 0x3BC
+  - EV MODE: 0X49B
+  - 0x610: dimmer knob, when all the way down byte 4 is 00, thats all i care about.
 
 sending over esp-now to matrix:
   - engine on / off

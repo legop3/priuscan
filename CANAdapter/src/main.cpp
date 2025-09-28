@@ -8,7 +8,7 @@
 // MAC address of the indicator ESP
 uint8_t PEER_MAC[] = {0x34, 0x98, 0x7A, 0x5D, 0xDE, 0xF8};
 // globals for esp-now stuff
-uint8_t last_on = 0xFF;
+uint8_t last_flags = 0xFF;
 unsigned long last_send = 0;
 
 
@@ -142,7 +142,11 @@ enum {
   IDX_HV_TB3_C = 7,
   IDX_BFS = 11,
   IDX_DASH_BRIGHT = 12,
-  IDX_CAR_DIM = 13
+  IDX_CAR_DIM = 13,
+  IDX_DISPLAY_OFF = 14,
+  IDX_MODE_EV = 15,
+  IDX_MODE_ECO = 16,
+  IDX_MODE_PWR = 17
 };
 
 // advance only after a successful decode
@@ -252,6 +256,8 @@ void setup() {
     CAN0.watchFor(0x247); // energy bar + state_energy_drain
     CAN0.watchFor(0x620); // dashboard brightness + dim state
     CAN0.watchFor(0x7EA); // multi-frame responses go here
+    CAN0.watchFor(0x610); // dimmer knob signal
+    CAN0.watchFor(0x49B); // drive mode status
 
     Serial.println(" CAN............500Kbps");
 
@@ -376,6 +382,48 @@ void loop() {
                 g_sensors[IDX_CAR_DIM] = car_dim_active ? 1.0f : 0.0f;
 
                 // Serial.printf("ALS=%u -> %u%%  DIM=%d\n", als_raw, ui_brightness_pct, car_dim_active);
+                break;
+            }
+
+            // dimmer knob signal, only used to tell when its all the way down
+            case 0x610: {
+                const bool dimmer_down = (can_message.data.byte[3] == 0x00);
+                // Serial.println(dimmer_down ? "Dimmer Down" : "Dimmer Up");
+                g_sensors[IDX_DISPLAY_OFF] = dimmer_down ? 1.0f : 0.0f;
+                break;
+            }
+
+            case 0x49B: {
+            // Guard length: we need at least 4 bytes (D1..D4)
+            // print entire message for debugging
+            // Serial.print("49B: ");
+            // for (int i = 0; i < can_message.length; i++) {
+            //   Serial.print(can_message.data.byte[i], HEX);
+            //   Serial.print(" ");
+            // }
+            // Serial.println();
+                if (can_message.length >= 4) {
+                    uint8_t flags = can_message.data.byte[4];  // D4 in your CSV
+
+                    bool ev_on  = (flags & 0x02) != 0;  // bit1
+                    bool pwr_on = (flags & 0x04) != 0;  // bit2
+                    bool eco_on = (flags & 0x08) != 0;  // bit3
+
+                    // Optional: enforce mutual exclusivity ECO vs PWR (defensive)
+                    if (eco_on && pwr_on) {
+                    // If this ever happens due to noise, pick one policy:
+                    // e.g., clear both or prefer the previous state.
+                    eco_on = pwr_on = false;
+                    }
+
+                    // Store as 0/1 in g_sensors (or keep as bools if you prefer)
+                    g_sensors[IDX_MODE_EV]  = ev_on  ? 1.0f : 0.0f;
+                    g_sensors[IDX_MODE_ECO] = eco_on ? 1.0f : 0.0f;
+                    g_sensors[IDX_MODE_PWR] = pwr_on ? 1.0f : 0.0f;
+
+                    // Optional quick print
+                    // Serial.printf("Modes: EV=%d ECO=%d PWR=%d (flags=0x%02X)\n", ev_on, eco_on, pwr_on, flags);
+                }
                 break;
             }
 
@@ -615,14 +663,28 @@ void loop() {
     }
 
     // STEP 5: ESP-NOW send
-    unsigned long now = millis();
-    uint8_t on = (g_sensors[IDX_RPM] > 500.0f) ? 1 : 0;
+    uint8_t engine_on = (g_sensors[IDX_RPM] > 500.0f) ? 1 : 0;
+    uint8_t car_dim = (uint8_t)g_sensors[IDX_CAR_DIM] ? 1 : 0;
+    uint8_t ev_mode = int(g_sensors[IDX_MODE_EV]); // placeholder for future use
+    uint8_t display_off = int(g_sensors[IDX_DISPLAY_OFF]); 
 
-    if (on != last_on || (now - last_send) >= 1000) {
-        esp_now_send(PEER_MAC, &on, sizeof(on));
-        last_on = on;
+    uint8_t flags =
+        (engine_on << 0) |
+        (car_dim << 1) |
+        (ev_mode << 2) |
+        (display_off << 3);
+    
+    unsigned long now = millis();
+    if (flags != last_flags || (now - last_send) >= 500) {
+        esp_now_send(PEER_MAC, &flags, 1);
+        last_flags = flags;
         last_send = now;
-        Serial.print("ESP-NOW send: "); Serial.println(on);
+
+        // Serial.print("ESP-NOW send: ");
+        // Serial.println(flags, BIN);
     }
+
+
+
 
 }

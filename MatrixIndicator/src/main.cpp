@@ -3,6 +3,9 @@
 #include <Adafruit_NeoPixel.h>
 #include <Adafruit_NeoMatrix.h>
 
+#include <WiFi.h>
+#include <esp_now.h>
+
 // bitmap file includes
 #include "bitmapsBig/EV.xbm.h"
 #include "bitmapsBig/GAS.xbm.h"
@@ -10,10 +13,12 @@
 #include "bitmapsBig/M.xbm.h"
 
 
+// matrix setup ------------------------------------------------------------------------------------------------
 #define DATA_PIN    18      // LED data pin
 #define W           16      // two 8x8 panels side by side
 #define H            8
-#define BRIGHTNESS   10     // initial brightness on boot
+#define BRIGHTNESS   100     // initial brightness on boot
+bool intro = true;
 
 // confirmed layout flags
 // BOT LEFT  COLS  PROG  => NEO_MATRIX_BOTTOM | NEO_MATRIX_LEFT | NEO_MATRIX_COLUMNS | NEO_MATRIX_PROGRESSIVE
@@ -23,7 +28,85 @@ Adafruit_NeoMatrix matrix(
   NEO_GRB + NEO_KHZ800
 );
 
+
+// display functions ---------------------------------------------------------------------------------------
+
+void showEv(bool m = false) {
+  // matrix.fillScreen(0);
+  matrix.fillRect(0, 1, W, H-1, 0); // clear everything except top rainbow line
+
+  matrix.drawXBitmap(0, 0, EV_bits, EV_width, EV_height, matrix.Color(0, 255, 0));
+
+  if (m) {
+    matrix.drawXBitmap(0, 0, M_bits, M_width, M_height, matrix.Color(0, 100, 255));
+  }
+
+  matrix.show();
+}
+
+void showGas() {
+  // matrix.fillScreen(0);
+  matrix.fillRect(0, 1, W, H-1, 0); // clear everything except top rainbow line
+
+  matrix.drawXBitmap(0, 0, GAS_bits, GAS_width, GAS_height, matrix.Color(255, 162, 0));
+
+  matrix.show();
+}
+
+
+// data receiver setup ---------------------------------------------------------------------------------------
+#define PACKET_TIMEOUT_MS 4000
+volatile uint8_t last_flags = 0;
+volatile unsigned long last_rx = 0;
+
+
+void onDataRecv(const uint8_t*, const uint8_t* data, int len) {
+  if (len < 1) return;
+  last_flags = data[0];
+  last_rx = millis();
+
+  // Decode bits and print immediately on packet
+  bool engine_on          = last_flags & (1 << 0);
+  bool car_dim            = last_flags & (1 << 1);
+  bool ev_mode            = last_flags & (1 << 2);
+  bool display_off        = last_flags & (1 << 3);
+
+  Serial.printf("RX flags: eng=%d, dim=%d, evm=%d, disp_off=%d\n",
+                engine_on, car_dim, ev_mode, display_off);
+
+  if (intro) {
+    return;
+  }
+
+  if (engine_on == 1) {
+    showGas();
+  } else if (ev_mode == 1) {
+    showEv(true);
+  } else {
+    showEv(false);
+  }
+
+  if (display_off == 1) {
+    matrix.setBrightness(0);
+  } else if (car_dim == 1) {
+    matrix.setBrightness(10);
+  } else {
+    matrix.setBrightness(255);
+  }
+  
+
+}
+
+
 void setup() {
+
+  Serial.begin(115200);
+  WiFi.mode(WIFI_STA);
+  Serial.print("ESP Board MAC Address: ");
+  Serial.println(WiFi.macAddress());
+  esp_now_init();
+  esp_now_register_recv_cb(onDataRecv);
+
   pinMode(DATA_PIN, OUTPUT);
   digitalWrite(DATA_PIN, LOW);
   delay(20);
@@ -75,54 +158,56 @@ void setup() {
 
 
   matrix.show();
+  delay(2000);
+
+  intro = false;
 }
-
-void showEv(bool m = false) {
-  // matrix.fillScreen(0);
-  matrix.fillRect(0, 1, W, H-1, 0); // clear everything except top rainbow line
-
-  matrix.drawXBitmap(0, 0, EV_bits, EV_width, EV_height, matrix.Color(0, 255, 0));
-
-  if (m) {
-    matrix.drawXBitmap(0, 0, M_bits, M_width, M_height, matrix.Color(0, 100, 255));
-  }
-
-  matrix.show();
-}
-
-void showGas() {
-  // matrix.fillScreen(0);
-  matrix.fillRect(0, 1, W, H-1, 0); // clear everything except top rainbow line
-
-  matrix.drawXBitmap(0, 0, GAS_bits, GAS_width, GAS_height, matrix.Color(255, 162, 0));
-
-  matrix.show();
-}
-
-// void showEngineIcon() {
-//   matrix.fillScreen(0);
-
-//   matrix.drawXBitmap(0, 0, engine_bits, engine_width, engine_height, matrix.Color(255, 162, 0));
-
-//   matrix.show();
-// }
 
 
 
 void loop() {
   // show ev without m
-  showEv();
-  delay(3000);
+  // showEv();
+  // delay(3000);
 
   // show ev with m
-  showEv(true);
-  delay(3000);
+  // showEv(true);
+  // delay(3000);
 
   // show gas mode
-  showGas();
-  delay(3000);
+  // showGas();
+  // delay(3000);
 
   // show engine icon
   // showEngineIcon();
   // delay(4000);
+
+  // bool stale = (PACKET_TIMEOUT_MS > 0) && (millis() - last_rx > PACKET_TIMEOUT_MS);
+  // uint8_t f = stale ? 0 : last_flags;
+
+
+
+
+  // static unsigned long last_print = 0;
+  //   if (millis() - last_print >= 1000) {
+  //     last_print = millis();
+  //     if (stale) {
+  //       Serial.println("No packets recently :3 flags considered 0");
+  //     } else {
+  //       // Serial.printf("Flags now: 0b" BYTE_TO_BINARY_PATTERN "\n",
+  //       //               BYTE_TO_BINARY(f)); 
+  //     }
+
+
+  //       Serial.print((f & (1 << 0)) ? "E" : "-");
+  //       Serial.print((f & (1 << 1)) ? "D" : "-");
+  //       Serial.print((f & (1 << 2)) ? "V" : "-");
+  //       Serial.println((f & (1 << 3)) ? "O" : "-");
+
+  //   }
+  
+
+
+
+
 }
