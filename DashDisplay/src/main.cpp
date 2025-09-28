@@ -77,6 +77,7 @@ struct PayloadF {
   uint8_t bfs;
   uint8_t bfor;
   uint8_t dim;
+  uint8_t off;
 };
 #pragma pack(pop)
 
@@ -510,6 +511,8 @@ static uint8_t  prev_dim = 255;
 static int      prev_ebar = INT_MIN;
 static int      prev_est  = INT_MIN;
 
+static uint8_t      prev_off = INT_MIN;
+
 void loop() {
   lv_timer_handler();
   pollUart();
@@ -649,12 +652,44 @@ void loop() {
       updateShiftStrip(lastPacket.ebar, (float)rpm_val);
       led_maybe_show();  // single WS2812 transfer per frame
 
-      // ===== Dimming (on change) =====
+      // ===== Dimming and screen off on change =====
       uint8_t dim_now = lastPacket.dim ? 1 : 0;
-      if (changed(prev_dim, dim_now)) {
-        if (dim_now) { setBacklightPct(30); setShiftStripBrightness(5); }
-        else          { setBacklightPct(100); setShiftStripBrightness(50); }
+      uint8_t off_now = lastPacket.off ? 1 : 0;
+
+      int backlight_use = 0;
+      int led_use = 0;
+      
+      if (changed(prev_off, off_now) || changed(prev_dim, dim_now)) {
+        if (off_now) {
+          backlight_use = 0;
+          led_use = 0;
+        } else if (dim_now) {
+          backlight_use = 30;
+          led_use = 5;
+        } else {
+          backlight_use = 100;
+          led_use = 50;
+        }
+        setBacklightPct(backlight_use);
+        setShiftStripBrightness(led_use);
       }
+
+      // if (changed(prev_off, off_now)) {
+      //   if (off_now) {
+      //     setBacklightPct(0);
+      //   } else {
+      //     // restore brightness based on dim state
+      //     if (dim_now) { setBacklightPct(30); setShiftStripBrightness(5); }
+      //     else          { setBacklightPct(100); setShiftStripBrightness(50); }
+      //   }
+      // }
+      // if (changed(prev_dim, dim_now)) {
+      //   if (dim_now) { setBacklightPct(30); setShiftStripBrightness(5); }
+      //   else          { setBacklightPct(100); setShiftStripBrightness(50); }
+      // }
+
+
+      
 
       // ===== Ebar & drain labels (on change) =====
       int ebar_round = (int)lrintf(lastPacket.ebar);

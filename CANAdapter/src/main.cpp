@@ -196,11 +196,11 @@ void initDisplayUart() {
 static inline void wr_f32(uint8_t *dst, float v) { memcpy(dst, &v, 4); }
 
 void sendSensorsFloat() {
-    const uint8_t n = 42;                 // payload length (bytes)
+    const uint8_t n = 43;                 // payload length (bytes)
     const int need = 1 + 1 + n + 1;       // [0xAA][len][payload][csum]
     if (DISP.availableForWrite() < need) return;
 
-    uint8_t buf[1 + 1 + 42 + 1];          // <-- or: uint8_t buf[1 + 1 + n + 1];
+    uint8_t buf[1 + 1 + 43 + 1];          // <-- or: uint8_t buf[1 + 1 + n + 1];
     size_t o = 0;
 
     buf[o++] = 0xAA;
@@ -228,11 +228,15 @@ void sendSensorsFloat() {
     // car dim signal 
     buf[o++] = g_sensors[IDX_CAR_DIM] ? 1 : 0;
 
+    // add display off flag
+    buf[o++] = g_sensors[IDX_DISPLAY_OFF];
+
     uint8_t csum = xor_checksum(&buf[2], n);     // XOR over payload only
     buf[o++] = csum;
 
+
     // (Optional safety during bring-up)
-    // if (o != (size_t)(1 + 1 + n + 1)) { Serial.printf("PACK LEN BUG: o=%u exp=%u\n", (unsigned)o, 1+1+n+1); }
+    if (o != (size_t)(1 + 1 + n + 1)) { Serial.printf("PACK LEN BUG: o=%u exp=%u\n", (unsigned)o, 1+1+n+1); }
 
     DISP.write(buf, o);
 }
