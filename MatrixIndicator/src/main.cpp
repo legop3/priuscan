@@ -1,46 +1,92 @@
-#include <WiFi.h>
-#include <esp_now.h>
+#include <Arduino.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_NeoPixel.h>
+#include <Adafruit_NeoMatrix.h>
 
-#define LED_PIN GPIO_NUM_2  // onboard LED
-#define PACKET_TIMEOUT_MS 4000  // 0 to disable timeout
+// bitmap file includes
+#include "bitmapsBig/EV.xbm.h"
+#include "bitmapsBig/GAS.xbm.h"
+// #include "bitmapsBig/engine.xbm.h"
+#include "bitmapsBig/M.xbm.h"
 
-volatile uint8_t engine_on = 0;
-volatile unsigned long last_rx = 0;
 
-void onDataRecv(const uint8_t*, const uint8_t* data, int len) {
-  if (len > 0) {
-    engine_on = data[0] ? 1 : 0;
-    last_rx = millis();
-    Serial.print("Packet received: engine_on = ");
-    Serial.println(engine_on);
-  }
-}
+#define DATA_PIN    18      // LED data pin
+#define W           16      // two 8x8 panels side by side
+#define H            8
+#define BRIGHTNESS   10     // initial brightness on boot
+
+// confirmed layout flags
+// BOT LEFT  COLS  PROG  => NEO_MATRIX_BOTTOM | NEO_MATRIX_LEFT | NEO_MATRIX_COLUMNS | NEO_MATRIX_PROGRESSIVE
+Adafruit_NeoMatrix matrix(
+  W, H, DATA_PIN,
+  NEO_MATRIX_BOTTOM | NEO_MATRIX_LEFT | NEO_MATRIX_COLUMNS | NEO_MATRIX_PROGRESSIVE,
+  NEO_GRB + NEO_KHZ800
+);
 
 void setup() {
-  pinMode(LED_PIN, OUTPUT);
-  Serial.begin(115200);
-  WiFi.mode(WIFI_STA);
-  Serial.print("Receiver MAC: ");
-  Serial.println(WiFi.macAddress());
-  esp_now_init();
-  esp_now_register_recv_cb(onDataRecv);
+  pinMode(DATA_PIN, OUTPUT);
+  digitalWrite(DATA_PIN, LOW);
+  delay(20);
+
+  matrix.begin();
+  matrix.setBrightness(BRIGHTNESS);
+  matrix.fillScreen(0);
+
+  matrix.drawPixel(0, 0, matrix.Color(255,   0,   0)); // 1st   = Red
+  matrix.drawPixel(15, 0, matrix.Color(  0, 255,   0)); // 2nd   = Green
+  matrix.drawPixel(15, 7, matrix.Color(  0,   0, 255)); // 65th  = Blue
+  matrix.drawPixel(0, 7, matrix.Color(255, 255,   0)); // 66th  = Yellow
+
+  matrix.show();
+  delay(1000);
+  matrix.fillScreen(0);
+  matrix.show();
 }
 
+void showEv(bool m = false) {
+  matrix.fillScreen(0);
+
+  matrix.drawXBitmap(0, 0, EV_bits, EV_width, EV_height, matrix.Color(0, 255, 0));
+
+  if (m) {
+    matrix.drawXBitmap(0, 0, M_bits, M_width, M_height, matrix.Color(0, 100, 255));
+  }
+
+  matrix.show();
+}
+
+void showGas() {
+  matrix.fillScreen(0);
+
+  matrix.drawXBitmap(0, 0, GAS_bits, GAS_width, GAS_height, matrix.Color(255, 162, 0));
+
+  matrix.show();
+}
+
+// void showEngineIcon() {
+//   matrix.fillScreen(0);
+
+//   matrix.drawXBitmap(0, 0, engine_bits, engine_width, engine_height, matrix.Color(255, 162, 0));
+
+//   matrix.show();
+// }
+
+
+
 void loop() {
-  bool stale = (PACKET_TIMEOUT_MS > 0) && (millis() - last_rx > PACKET_TIMEOUT_MS);
-  bool led_state = (!stale && engine_on);
+  // show ev without m
+  showEv();
+  delay(3000);
 
-  digitalWrite(LED_PIN, led_state ? HIGH : LOW);
+  // show ev with m
+  showEv(true);
+  delay(3000);
 
-  // Print timeout status occasionally
-  // static unsigned long last_print = 0;
-  // if (millis() - last_print > 1000) {
-  //   last_print = millis();
-  //   if (stale) {
-  //     Serial.println("No packets recently → treating engine as OFF");
-  //   } else {
-  //     Serial.print("Engine status: ");
-  //     Serial.println(led_state ? "ON" : "OFF");
-  //   }
-  // }
+  // show gas mode
+  showGas();
+  delay(3000);
+
+  // show engine icon
+  // showEngineIcon();
+  // delay(4000);
 }
