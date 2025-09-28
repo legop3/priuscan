@@ -102,4 +102,18 @@ send a CAN frame assembled manually:
   // fan_speed_6.data.byte[7] = 0x00;
   // CAN0.sendFrame(fan_speed_6);
   // Serial.println("reauesting battery current");
+  
+# THINGS TO ADD FOR NEXT PHASE:
 
+reading from CAN:
+  - dash brightness knob (all the way down = off signal)
+  - EV mode enable
+
+sending over esp-now to matrix:
+  - engine on / off
+  - EV mode on / off
+  - display dim signal
+  - display off signal
+  
+on dash display:
+  - display off signal = set screen to 1% and disable LED strip
