@@ -30,10 +30,9 @@ inline uint16_t Process_Endian(uint8_t byte_msb, uint8_t byte_lsb) {
   return (byte_msb << 8) | byte_lsb;
 }
 
-// Pre-allocated frame to avoid repeated memory allocation
-CAN_FRAME txFrame;
-
 void sendCANFrame(uint32_t canID, const uint8_t* data, uint8_t dataLength, bool extended = false, bool rtr = false) {
+    // Use a local frame so back-to-back sends don't overwrite a shared TX buffer.
+    CAN_FRAME txFrame = {};
     txFrame.id = canID;
     txFrame.length = dataLength;
     txFrame.extended = extended;
@@ -116,6 +115,23 @@ void sendSensorRequest(uint8_t sensorNum) {
     }
 }
 
+// Steering-wheel button decode on 0x58E D6
+enum : uint8_t {
+    STEER_NONE  = 0x00,
+    STEER_LEFT  = 0x01,
+    STEER_RIGHT = 0x02,
+    STEER_UP    = 0x03,
+    STEER_DOWN  = 0x04,
+    STEER_ENTER = 0x05,
+    STEER_BACK  = 0x06
+};
+
+enum : uint8_t {
+    WINDOW_MODE_ALL = 0,
+    WINDOW_MODE_FRONT_PAIR = 1,
+    WINDOW_MODE_REAR_PAIR = 2
+};
+
 /////////////////////////////////////////////////////////////global variables//////////////////////////////////////////////////////////
 // Timing control for polling
 unsigned long lastPollTime = 0;
@@ -129,6 +145,44 @@ bool waiting = false;               // Are we waiting for a response?
 unsigned long requestTimeout = 0;   // When we sent the last request
 const unsigned long TIMEOUT_MS = 300; // a little more slack for multi-frame
 int num_polling_sensors = 6; // number of sensors that get polled
+
+// Steering controls always enabled
+unsigned long lastEnterPressMs = 0;
+const unsigned long ENTER_DOUBLE_PRESS_MS = 700;
+uint8_t windowControlMode = WINDOW_MODE_ALL;
+
+// Button state machine
+uint8_t currentSteerCode = STEER_NONE;
+unsigned long currentSteerCodeStartMs = 0;
+
+// Cluster buzzer feedback pattern (tunable)
+bool clusterBuzzerIsOn = false;
+bool clusterBeepPatternActive = false;
+uint8_t clusterBeepsRemaining = 0;
+unsigned long clusterBeepNextToggleMs = 0;
+const unsigned long CLUSTER_BEEP_ON_MS = 90;
+const unsigned long CLUSTER_BEEP_OFF_MS = 120;
+
+// Wireless buzzer hold-to-horn behavior (tunable)
+bool backHoldActive = false;
+unsigned long backHoldStartMs = 0;
+const unsigned long BACK_HORN_HOLD_MS = 80;
+bool wirelessBuzzerOn = false;
+
+// Window hold/pulse behavior (tunable)
+const unsigned long WINDOW_HOLD_TO_MOVE_MS = 300;
+const unsigned long WINDOW_PULSE_MS = 1100;
+uint8_t windowActiveDirCode = STEER_NONE; // STEER_UP / STEER_DOWN while active
+unsigned long windowLastPulseMs = 0;
+const unsigned long WINDOW_GROUP_FRAME_GAP_MS = 100;
+
+// Non-blocking staggered sender for grouped window commands.
+bool windowGroupTxActive = false;
+uint8_t windowGroupCmd = 0x00;
+uint8_t windowGroupSubs[4] = {0};
+uint8_t windowGroupSubCount = 0;
+uint8_t windowGroupSubIndex = 0;
+unsigned long windowGroupNextTxMs = 0;
 
 // g_sensors indexes
 enum {
@@ -160,6 +214,200 @@ inline void advanceAfterDecode(unsigned long now) {
         sendSensorRequest(sensor_num);
         requestTimeout = now;
     }
+}
+
+inline void sendClusterBuzzerCommand(bool on) {
+    if (clusterBuzzerIsOn == on) return;
+    clusterBuzzerIsOn = on;
+    if (on) {
+        sendCANFrame(0x7B0, {0x07,0x30,0x07,0x00,0x01,0x01,0x00,0x00});
+    } else {
+        sendCANFrame(0x7B0, {0x07,0x30,0x07,0x00,0x01,0x00,0x00,0x00});
+    }
+}
+
+void playClusterBeeps(uint8_t count, unsigned long now) {
+    if (count == 0) return;
+    sendClusterBuzzerCommand(false); // restart pattern from quiet state
+    clusterBeepPatternActive = true;
+    clusterBeepsRemaining = count;
+    clusterBeepNextToggleMs = now; // start immediately
+}
+
+void processClusterBeeps(unsigned long now) {
+    if (!clusterBeepPatternActive) return;
+    if (now < clusterBeepNextToggleMs) return;
+
+    if (!clusterBuzzerIsOn) {
+        sendClusterBuzzerCommand(true);
+        clusterBeepNextToggleMs = now + CLUSTER_BEEP_ON_MS;
+        return;
+    }
+
+    // We were on; turn off and count one complete beep.
+    sendClusterBuzzerCommand(false);
+    if (clusterBeepsRemaining > 0) clusterBeepsRemaining--;
+
+    if (clusterBeepsRemaining == 0) {
+        clusterBeepPatternActive = false;
+        return;
+    }
+
+    clusterBeepNextToggleMs = now + CLUSTER_BEEP_OFF_MS;
+}
+
+inline void sendWirelessBuzzerCommand(bool on) {
+    if (wirelessBuzzerOn == on) return;
+    wirelessBuzzerOn = on;
+    if (on) {
+        sendCANFrame(0x750, {0x40,0x04,0x30,0x14,0x00,0x80,0x00,0x00});
+    } else {
+        sendCANFrame(0x750, {0x40,0x04,0x30,0x14,0x00,0x00,0x00,0x00});
+    }
+}
+
+inline void sendWindowCommand(uint8_t sub, uint8_t cmd) {
+    sendCANFrame(0x750, {sub,0x04,0x30,0x01,0x01,cmd,0x00,0x00});
+}
+
+uint8_t buildWindowGroupSubs(uint8_t mode, uint8_t* outSubs) {
+    switch (mode) {
+        case WINDOW_MODE_FRONT_PAIR:
+            outSubs[0] = 0x90;
+            outSubs[1] = 0x91;
+            return 2;
+        case WINDOW_MODE_REAR_PAIR:
+            outSubs[0] = 0x93;
+            outSubs[1] = 0x92;
+            return 2;
+        case WINDOW_MODE_ALL:
+        default:
+            outSubs[0] = 0x90;
+            outSubs[1] = 0x91;
+            outSubs[2] = 0x93;
+            outSubs[3] = 0x92;
+            return 4;
+    }
+}
+
+void scheduleWindowGroupCommand(uint8_t mode, uint8_t cmd, unsigned long now) {
+    windowGroupCmd = cmd;
+    windowGroupSubCount = buildWindowGroupSubs(mode, windowGroupSubs);
+    windowGroupSubIndex = 0;
+    windowGroupNextTxMs = now;
+    windowGroupTxActive = (windowGroupSubCount > 0);
+}
+
+void processWindowGroupTx(unsigned long now) {
+    if (!windowGroupTxActive) return;
+    if (now < windowGroupNextTxMs) return;
+
+    sendWindowCommand(windowGroupSubs[windowGroupSubIndex], windowGroupCmd);
+    windowGroupSubIndex++;
+
+    if (windowGroupSubIndex >= windowGroupSubCount) {
+        windowGroupTxActive = false;
+        return;
+    }
+
+    windowGroupNextTxMs = now + WINDOW_GROUP_FRAME_GAP_MS;
+}
+
+void stopActiveWindowMotion() {
+    if (windowActiveDirCode == STEER_NONE) return;
+    scheduleWindowGroupCommand(windowControlMode, 0x00, millis());
+    windowActiveDirCode = STEER_NONE;
+}
+
+void processWirelessHorn(unsigned long now) {
+    if (backHoldActive && !wirelessBuzzerOn && (now - backHoldStartMs) >= BACK_HORN_HOLD_MS) {
+        playClusterBeeps(1, now);
+        sendWirelessBuzzerCommand(true);
+    }
+
+    if (!backHoldActive && wirelessBuzzerOn) {
+        sendWirelessBuzzerCommand(false);
+    }
+}
+
+void processWindowControl(unsigned long now) {
+    const bool holdingUp = (currentSteerCode == STEER_UP);
+    const bool holdingDown = (currentSteerCode == STEER_DOWN);
+    const bool holdingDir = holdingUp || holdingDown;
+
+    if (!holdingDir) {
+        stopActiveWindowMotion();
+        return;
+    }
+
+    const unsigned long heldMs = now - currentSteerCodeStartMs;
+    if (heldMs < WINDOW_HOLD_TO_MOVE_MS) {
+        stopActiveWindowMotion();
+        return;
+    }
+
+    uint8_t wantedDir = holdingUp ? STEER_UP : STEER_DOWN;
+    uint8_t cmd = holdingUp ? 0x80 : 0x40;
+
+    if (windowActiveDirCode != wantedDir) {
+        stopActiveWindowMotion();
+        scheduleWindowGroupCommand(windowControlMode, cmd, now);
+        windowActiveDirCode = wantedDir;
+        windowLastPulseMs = now;
+        return;
+    }
+
+    if ((now - windowLastPulseMs) >= WINDOW_PULSE_MS) {
+        scheduleWindowGroupCommand(windowControlMode, cmd, now);
+        windowLastPulseMs = now;
+    }
+}
+
+void handleSteeringButton(uint8_t code, unsigned long now) {
+    if (code == currentSteerCode) {
+        return;
+    }
+
+    uint8_t prev = currentSteerCode;
+    currentSteerCode = code;
+    currentSteerCodeStartMs = now;
+    const bool pressEdge = (prev == STEER_NONE && code != STEER_NONE);
+    const bool releaseEdge = (prev != STEER_NONE && code == STEER_NONE);
+
+    if (pressEdge && code == STEER_BACK) {
+        backHoldActive = true;
+        backHoldStartMs = now;
+    }
+
+    if (releaseEdge && prev == STEER_BACK) {
+        backHoldActive = false;
+        sendWirelessBuzzerCommand(false);
+    }
+
+    if (pressEdge && code == STEER_ENTER) {
+        if (lastEnterPressMs != 0 && (now - lastEnterPressMs) <= ENTER_DOUBLE_PRESS_MS) {
+            windowControlMode = (windowControlMode + 1) % 3;
+            uint8_t beeps = (windowControlMode == WINDOW_MODE_ALL) ? 3 :
+                            (windowControlMode == WINDOW_MODE_FRONT_PAIR) ? 1 : 2;
+            playClusterBeeps(beeps, now);
+            lastEnterPressMs = 0;
+            Serial.printf("Window mode: %u\n", (unsigned)(windowControlMode + 1));
+        } else {
+            lastEnterPressMs = now;
+        }
+    }
+
+}
+
+void processSteeringControlState(unsigned long now) {
+    if (lastEnterPressMs != 0 && (now - lastEnterPressMs) > ENTER_DOUBLE_PRESS_MS) {
+        lastEnterPressMs = 0;
+    }
+
+    processClusterBeeps(now);
+    processWirelessHorn(now);
+    processWindowGroupTx(now);
+    processWindowControl(now);
 }
 
 
@@ -262,12 +510,9 @@ void setup() {
     CAN0.watchFor(0x7EA); // multi-frame responses go here
     CAN0.watchFor(0x610); // dimmer knob signal
     CAN0.watchFor(0x49B); // drive mode status
+    CAN0.watchFor(0x58E); // steering wheel directional/enter/back buttons
 
     Serial.println(" CAN............500Kbps");
-
-    // Pre-configure the polling frame to avoid repeated setup
-    txFrame.extended = false;
-    txFrame.rtr = false;
 
     initDisplayUart();
 
@@ -286,6 +531,7 @@ void setup() {
 void loop() {
     CAN_FRAME can_message;
     unsigned long currentTime = millis();
+    processSteeringControlState(currentTime);
 
     // STEP 1: Handle polling (independent of CAN messages)
     if (!waiting && currentTime - lastPollTime >= POLL_INTERVAL) {
@@ -428,6 +674,13 @@ void loop() {
                     // Optional quick print
                     // Serial.printf("Modes: EV=%d ECO=%d PWR=%d (flags=0x%02X)\n", ev_on, eco_on, pwr_on, flags);
                 }
+                break;
+            }
+
+            case 0x58E: {
+                // Steering button code is in D6.
+                uint8_t code = can_message.data.byte[5];
+                handleSteeringButton(code, currentTime);
                 break;
             }
 

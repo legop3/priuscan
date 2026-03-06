@@ -14,7 +14,7 @@
 
 
 // matrix setup ------------------------------------------------------------------------------------------------
-#define DATA_PIN    18      // LED data pin
+#define DATA_PIN    14    // LED data pin
 #define W           16      // two 8x8 panels side by side
 #define H            8
 #define BRIGHTNESS   100     // initial brightness on boot
