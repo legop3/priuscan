@@ -152,19 +152,20 @@ const unsigned long BACK_HORN_HOLD_MS = 200;
 bool wirelessBuzzerOn = false;
 
 // Window hold/pulse behavior (tunable)
-const unsigned long WINDOW_HOLD_TO_MOVE_MS = 200;
-const unsigned long WINDOW_PULSE_MS = 500;
+const unsigned long WINDOW_HOLD_TO_MOVE_MS = 150;
 uint8_t windowActiveDirCode = STEER_NONE; // STEER_UP / STEER_DOWN while active
-unsigned long windowLastPulseMs = 0;
-const unsigned long WINDOW_GROUP_FRAME_GAP_MS = 100;
+const unsigned long WINDOW_ACK_TIMEOUT_MS = 60;
+const uint8_t WINDOW_MAX_RETRIES = 2;
 
-// Non-blocking staggered sender for grouped window commands.
+// ACK-driven sender for grouped window commands.
 bool windowGroupTxActive = false;
 uint8_t windowGroupCmd = 0x00;
 uint8_t windowGroupSubs[4] = {0};
 uint8_t windowGroupSubCount = 0;
 uint8_t windowGroupSubIndex = 0;
-unsigned long windowGroupNextTxMs = 0;
+bool windowGroupAwaitingAck = false;
+uint8_t windowGroupRetryCount = 0;
+unsigned long windowGroupLastSendMs = 0;
 
 // g_sensors indexes
 enum {
@@ -224,29 +225,61 @@ void scheduleWindowGroupCommand(uint8_t cmd, unsigned long now) {
     windowGroupCmd = cmd;
     windowGroupSubCount = buildWindowGroupSubs(windowGroupSubs);
     windowGroupSubIndex = 0;
-    windowGroupNextTxMs = now;
+    windowGroupAwaitingAck = false;
+    windowGroupRetryCount = 0;
+    windowGroupLastSendMs = now;
     windowGroupTxActive = (windowGroupSubCount > 0);
 }
 
 void processWindowGroupTx(unsigned long now) {
     if (!windowGroupTxActive) return;
-    if (now < windowGroupNextTxMs) return;
 
-    sendWindowCommand(windowGroupSubs[windowGroupSubIndex], windowGroupCmd);
-    windowGroupSubIndex++;
-
-    if (windowGroupSubIndex >= windowGroupSubCount) {
-        windowGroupTxActive = false;
+    if (!windowGroupAwaitingAck) {
+        sendWindowCommand(windowGroupSubs[windowGroupSubIndex], windowGroupCmd);
+        windowGroupAwaitingAck = true;
+        windowGroupLastSendMs = now;
         return;
     }
 
-    windowGroupNextTxMs = now + WINDOW_GROUP_FRAME_GAP_MS;
+    if ((now - windowGroupLastSendMs) < WINDOW_ACK_TIMEOUT_MS) return;
+
+    if (windowGroupRetryCount < WINDOW_MAX_RETRIES) {
+        windowGroupRetryCount++;
+        sendWindowCommand(windowGroupSubs[windowGroupSubIndex], windowGroupCmd);
+        windowGroupLastSendMs = now;
+        return;
+    }
+
+    // Give up on this subaddress and continue with the next one.
+    windowGroupRetryCount = 0;
+    windowGroupAwaitingAck = false;
+    windowGroupSubIndex++;
+    if (windowGroupSubIndex >= windowGroupSubCount) {
+        windowGroupTxActive = false;
+    }
 }
 
-void stopActiveWindowMotion() {
-    if (windowActiveDirCode == STEER_NONE) return;
-    scheduleWindowGroupCommand(0x00, millis());
-    windowActiveDirCode = STEER_NONE;
+void onWindowAck(uint8_t sub) {
+    if (!windowGroupTxActive || !windowGroupAwaitingAck) return;
+    if (windowGroupSubIndex >= windowGroupSubCount) return;
+    if (sub != windowGroupSubs[windowGroupSubIndex]) return;
+
+    windowGroupRetryCount = 0;
+    windowGroupAwaitingAck = false;
+    windowGroupSubIndex++;
+    if (windowGroupSubIndex >= windowGroupSubCount) {
+        windowGroupTxActive = false;
+    }
+}
+
+void handleBodyAckFrame(const CAN_FRAME& can_message) {
+    // Positive response for window command looks like:
+    // SS 02 70 01 00 00 00 00
+    if (can_message.length < 4) return;
+    const uint8_t* d = can_message.data.byte;
+    if (d[2] == 0x70 && d[3] == 0x01) {
+        onWindowAck(d[0]); // subaddress
+    }
 }
 
 void processWirelessHorn(unsigned long now) {
@@ -265,35 +298,28 @@ void processWindowControl(unsigned long now) {
     const bool holdingDir = holdingUp || holdingDown;
 
     if (!holdingDir) {
-        stopActiveWindowMotion();
+        // Re-arm one-shot logic once direction is released.
+        windowActiveDirCode = STEER_NONE;
         return;
     }
 
     const unsigned long heldMs = now - currentSteerCodeStartMs;
     if (heldMs < WINDOW_HOLD_TO_MOVE_MS) {
-        stopActiveWindowMotion();
         return;
     }
 
     uint8_t wantedDir = holdingUp ? STEER_UP : STEER_DOWN;
     uint8_t cmd = holdingUp ? 0x80 : 0x40;
 
-    if (windowActiveDirCode != wantedDir) {
-        stopActiveWindowMotion();
+    // One-shot per hold: send once after hold threshold, then wait for release.
+    if (windowActiveDirCode == STEER_NONE) {
         scheduleWindowGroupCommand(cmd, now);
         windowActiveDirCode = wantedDir;
-        windowLastPulseMs = now;
-        return;
-    }
-
-    if ((now - windowLastPulseMs) >= WINDOW_PULSE_MS) {
-        scheduleWindowGroupCommand(cmd, now);
-        windowLastPulseMs = now;
     }
 }
 
 inline bool isWindowMotionBusy() {
-    return (windowActiveDirCode != STEER_NONE) || windowGroupTxActive;
+    return windowGroupTxActive;
 }
 
 void handleSteeringButton(uint8_t code, unsigned long now) {
@@ -426,6 +452,7 @@ void setup() {
     CAN0.watchFor(0x610); // dimmer knob signal
     CAN0.watchFor(0x49B); // drive mode status
     CAN0.watchFor(0x58E); // steering wheel directional/enter/back buttons
+    CAN0.watchFor(0x758); // body ECU positive responses (window/wireless buzzer ACKs)
 
     Serial.println(" CAN............500Kbps");
 
@@ -595,6 +622,11 @@ void loop() {
                 // Steering button code is in D6.
                 uint8_t code = can_message.data.byte[5];
                 handleSteeringButton(code, currentTime);
+                break;
+            }
+
+            case 0x758: {
+                handleBodyAckFrame(can_message);
                 break;
             }
 
