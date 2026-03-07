@@ -1386,7 +1386,7 @@
                   "type": "LVGLLabelWidget",
                   "left": -13,
                   "top": -16,
-                  "width": 248,
+                  "width": 110,
                   "height": 52,
                   "customInputs": [],
                   "customOutputs": [],
@@ -1426,29 +1426,29 @@
                   },
                   "group": "",
                   "groupIndex": 0,
-                  "text": "Ebar: -100",
+                  "text": "-100",
                   "textType": "literal",
                   "longMode": "WRAP",
                   "recolor": false
                 },
                 {
-                  "objID": "02f903b8-e232-4dab-9087-a1fda1c3d4af",
+                  "objID": "8cf2f48a-d48c-4431-a67c-f574976ede00",
                   "type": "LVGLLabelWidget",
-                  "left": 244,
+                  "left": 14,
                   "top": -16,
-                  "width": 223,
+                  "width": 320,
                   "height": 52,
                   "customInputs": [],
                   "customOutputs": [],
                   "style": {
-                    "objID": "7ee01369-edbd-48f1-ca25-154aa526cdba",
+                    "objID": "42713471-3946-4c65-e68d-bcd9842499c7",
                     "useStyle": "default",
                     "conditionalStyles": [],
                     "childStyles": []
                   },
                   "timeline": [],
                   "eventHandlers": [],
-                  "identifier": "energy drain",
+                  "identifier": "coolant temp",
                   "leftUnit": "px",
                   "topUnit": "px",
                   "widthUnit": "content",
@@ -1465,18 +1465,19 @@
                   "disabledStateType": "literal",
                   "states": "",
                   "localStyles": {
-                    "objID": "34bbb0aa-a17b-47f6-97c1-8e7060f21f8c",
+                    "objID": "96159e45-0814-4d17-c10a-9204e0bda973",
                     "definition": {
                       "MAIN": {
                         "DEFAULT": {
-                          "text_font": "MONTSERRAT_48"
+                          "text_font": "MONTSERRAT_48",
+                          "align": "TOP_RIGHT"
                         }
                       }
                     }
                   },
                   "group": "",
                   "groupIndex": 0,
-                  "text": "Mode: 10",
+                  "text": "Coolant: 165°",
                   "textType": "literal",
                   "longMode": "WRAP",
                   "recolor": false

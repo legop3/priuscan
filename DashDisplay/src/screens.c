@@ -331,17 +331,18 @@ void create_screen_main() {
                     lv_obj_set_size(obj, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
                     add_style_text_readable(obj);
                     lv_obj_set_style_text_font(obj, &lv_font_montserrat_48, LV_PART_MAIN | LV_STATE_DEFAULT);
-                    lv_label_set_text(obj, "Ebar: -100");
+                    lv_label_set_text(obj, "-100");
                 }
                 {
-                    // energy drain
+                    // coolant temp
                     lv_obj_t *obj = lv_label_create(parent_obj);
-                    objects.energy_drain = obj;
-                    lv_obj_set_pos(obj, 244, -16);
+                    objects.coolant_temp = obj;
+                    lv_obj_set_pos(obj, 14, -16);
                     lv_obj_set_size(obj, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
                     add_style_text_readable(obj);
                     lv_obj_set_style_text_font(obj, &lv_font_montserrat_48, LV_PART_MAIN | LV_STATE_DEFAULT);
-                    lv_label_set_text(obj, "Mode: 10");
+                    lv_obj_set_style_align(obj, LV_ALIGN_TOP_RIGHT, LV_PART_MAIN | LV_STATE_DEFAULT);
+                    lv_label_set_text(obj, "Coolant: 165°");
                 }
             }
         }

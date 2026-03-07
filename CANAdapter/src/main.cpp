@@ -127,18 +127,35 @@ enum : uint8_t {
 };
 
 /////////////////////////////////////////////////////////////global variables//////////////////////////////////////////////////////////
-// Timing control for polling
-unsigned long lastPollTime = 0;
-const unsigned long POLL_INTERVAL = 100; // Poll every 100ms
 uint8_t fanOverrideEnable = 0;
 
 // Sensor polling stuff
 volatile float g_sensors[20] = {0}; // All sensor values
-uint8_t sensor_num = 0;             // Which sensor we're on (0,1,2,3,4...)
+enum : uint8_t {
+  SENSOR_HV_CURRENT = 0,
+  SENSOR_HV_VOLTAGE = 1,
+  SENSOR_ECT = 2,
+  SENSOR_HV_TEMPS = 3,
+  SENSOR_SOC = 4,
+  SENSOR_HV_FAN_MODE = 5,
+  SENSOR_COUNT = 6,
+  SENSOR_NONE = 0xFF
+};
 bool waiting = false;               // Are we waiting for a response?
+uint8_t currentPollSensor = SENSOR_NONE;
 unsigned long requestTimeout = 0;   // When we sent the last request
 const unsigned long TIMEOUT_MS = 300; // a little more slack for multi-frame
-int num_polling_sensors = 6; // number of sensors that get polled
+
+// Per-sensor poll cadence (ms). Fast-changing values are sampled more often.
+const unsigned long sensorIntervalMs[SENSOR_COUNT] = {
+  120, // HV current
+  320, // HV voltage (multi-frame)
+  120, // Coolant temp
+  350, // HV temps (multi-frame)
+  220, // SOC
+  450  // Fan mode
+};
+unsigned long sensorNextDueMs[SENSOR_COUNT] = {0};
 
 // Steering controls always enabled
 // Button state machine
@@ -186,17 +203,35 @@ enum {
   IDX_MODE_PWR = 17
 };
 
-// advance only after a successful decode
-inline void advanceAfterDecode(unsigned long now) {
-    sensor_num++;
-    if (sensor_num >= num_polling_sensors) {
-        sensor_num = 0;
-        lastPollTime = now;
-        waiting = false;
-    } else {
-        sendSensorRequest(sensor_num);
-        requestTimeout = now;
+inline void completeCurrentSensor(unsigned long now) {
+    if (currentPollSensor != SENSOR_NONE && currentPollSensor < SENSOR_COUNT) {
+        sensorNextDueMs[currentPollSensor] = now + sensorIntervalMs[currentPollSensor];
     }
+    currentPollSensor = SENSOR_NONE;
+    waiting = false;
+}
+
+inline void timeoutCurrentSensor(unsigned long now) {
+    if (currentPollSensor != SENSOR_NONE && currentPollSensor < SENSOR_COUNT) {
+        // On timeout, retry later but don't block faster sensors.
+        sensorNextDueMs[currentPollSensor] = now + sensorIntervalMs[currentPollSensor];
+    }
+    currentPollSensor = SENSOR_NONE;
+    waiting = false;
+}
+
+int8_t pickNextDueSensor(unsigned long now) {
+    int8_t best = -1;
+    unsigned long bestOverdue = 0;
+    for (uint8_t s = 0; s < SENSOR_COUNT; s++) {
+        if (now < sensorNextDueMs[s]) continue;
+        unsigned long overdue = now - sensorNextDueMs[s];
+        if (best < 0 || overdue > bestOverdue) {
+            best = s;
+            bestOverdue = overdue;
+        }
+    }
+    return best;
 }
 
 inline void sendWirelessBuzzerCommand(bool on) {
@@ -467,6 +502,11 @@ void setup() {
     peer.encrypt = false;
     esp_now_add_peer(&peer);
     Serial.println(" ESP-NOW.............INIT");
+
+    const unsigned long now = millis();
+    for (uint8_t s = 0; s < SENSOR_COUNT; s++) {
+        sensorNextDueMs[s] = now;
+    }
 }
 
 ////////////////////////////////////////////////////////////main loop//////////////////////////////////////////////////////////
@@ -476,26 +516,20 @@ void loop() {
     processSteeringControlState(currentTime);
     const bool windowBusy = isWindowMotionBusy();
 
-    // STEP 1: Handle polling (independent of CAN messages)
-    if (!windowBusy && !waiting && currentTime - lastPollTime >= POLL_INTERVAL) {
-        sendSensorRequest(sensor_num);
-        waiting = true;
-        requestTimeout = currentTime;
-    }
-
-    // STEP 2: Handle timeout
-    if (!windowBusy && waiting && currentTime - requestTimeout >= TIMEOUT_MS) {
-        // Move to next sensor
-        sensor_num++;
-        if (sensor_num >= num_polling_sensors) {
-            sensor_num = 0;
-            lastPollTime = currentTime;
-            waiting = false;
-        } else {
-            // Send next sensor request immediately
-            sendSensorRequest(sensor_num);
+    // STEP 1: PID scheduler
+    if (!windowBusy && !waiting) {
+        int8_t nextSensor = pickNextDueSensor(currentTime);
+        if (nextSensor >= 0) {
+            currentPollSensor = (uint8_t)nextSensor;
+            sendSensorRequest(currentPollSensor);
+            waiting = true;
             requestTimeout = currentTime;
         }
+    }
+
+    // STEP 2: in-flight timeout
+    if (!windowBusy && waiting && currentTime - requestTimeout >= TIMEOUT_MS) {
+        timeoutCurrentSensor(currentTime);
     }
 
     // STEP 3: Process CAN messages
@@ -649,7 +683,7 @@ void loop() {
                     const uint8_t  pciType = b[0] & 0xF0; // 0x00=SF, 0x10=FF, 0x20=CF, 0x30=FC
                     const uint8_t  seq     = b[0] & 0x0F; // CF sequence (1..15)
 
-                    switch (sensor_num) {
+                    switch (currentPollSensor) {
                         // ---------------------- Battery Current (21 98) ----------------------
                         case 0: {
                             bool decoded = false;
@@ -668,7 +702,7 @@ void loop() {
                             }
 
                             if (decoded) {
-                                advanceAfterDecode(currentTime);
+                                completeCurrentSensor(currentTime);
                             }
                             break;
                         }
@@ -689,7 +723,7 @@ void loop() {
                             if (pciType == 0x20 /*CF*/ && seq == 0x01 && can_message.length >= 4) {
                                 uint16_t raw = (uint16_t(b[2]) << 8) | b[3]; // F,G
                                 g_sensors[2] = raw / 2.0f;                    // volts
-                                advanceAfterDecode(currentTime);
+                                completeCurrentSensor(currentTime);
                             }
                             break;
                         }
@@ -705,7 +739,7 @@ void loop() {
                             }
 
                             if (decoded) {
-                                advanceAfterDecode(currentTime);
+                                completeCurrentSensor(currentTime);
                             }
                             break;
                         }
@@ -739,7 +773,7 @@ void loop() {
                                 g_sensors[6] = (EF * 255.9f / 65535.0f) - 50.0f; // TB2 °C
                                 g_sensors[7] = (GH * 255.9f / 65535.0f) - 50.0f; // TB3 °C
 
-                                advanceAfterDecode(currentTime);
+                                completeCurrentSensor(currentTime);
                             }
 
                             break;
@@ -757,7 +791,7 @@ void loop() {
                                 decoded = true;
                             }
                             if (decoded) {
-                                advanceAfterDecode(currentTime);
+                                completeCurrentSensor(currentTime);
                             }
                             break;
                         }
@@ -803,7 +837,7 @@ void loop() {
                                 } else {
                                     g_sensors[11] = 0;                  // clamp/guard if odd value
                                 }
-                                advanceAfterDecode(currentTime);
+                                completeCurrentSensor(currentTime);
                             }
                             break;
                         }

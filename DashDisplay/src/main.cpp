@@ -487,7 +487,7 @@ static int      prev_kw_start = INT_MIN;
 static int      prev_kw_value = INT_MIN;
 static uint8_t  prev_kw_sign = 255;
 
-static int      prev_soc = INT_MIN;
+static int      prev_soc_centi = INT_MIN;
 static uint8_t  prev_soc_band = 255;
 
 static int      prev_btF = INT_MIN;        // rounded F° for label
@@ -503,13 +503,15 @@ static int      prev_bt1c = INT_MIN;       // centi-F (x100)
 static int      prev_bt2c = INT_MIN;
 static int      prev_bt3c = INT_MIN;
 
-static int      prev_batt_v = INT_MIN;
-static int      prev_batt_a = INT_MIN;
+static int      prev_batt_v_centi = INT_MIN;
+static int      prev_batt_a_centi = INT_MIN;
 
 static uint8_t  prev_dim = 255;
 
 static int      prev_ebar = INT_MIN;
 static int      prev_est  = INT_MIN;
+
+static int      prev_ectF = INT_MIN;
 
 static uint8_t      prev_off = INT_MIN;
 
@@ -568,14 +570,14 @@ void loop() {
       }
 
       // ===== Battery SoC panel =====
-      int soc_r = (int)lrintf(lastPacket.soc_pct);
-      if (changed(prev_soc, soc_r)) {
-        lv_label_set_text_fmt(objects.battery_soc, "%d%%\nSoC", soc_r);
+      int soc_centi = (int)lrintf(lastPacket.soc_pct * 100.0f);
+      if (changed(prev_soc_centi, soc_centi)) {
+        label_set_centi(objects.battery_soc, soc_centi, "%\nSoC");
       }
       uint8_t soc_band =
-        (soc_r < 45) ? 0 :
-        (soc_r < 50) ? 1 :
-        (soc_r < 60) ? 2 : 3;
+        (soc_centi < 4500) ? 0 :
+        (soc_centi < 5000) ? 1 :
+        (soc_centi < 6000) ? 2 : 3;
       if (changed(prev_soc_band, soc_band)) {
         lv_color_t c = (soc_band==0)?g_red:(soc_band==1)?g_orange:(soc_band==2)?g_yellow:g_blue;
         lv_obj_set_style_bg_color(objects.battery_info_panel, c, LV_PART_MAIN);
@@ -634,6 +636,12 @@ void loop() {
         }
       }
 
+      // ===== Engine coolant temp =====
+      int ectF_round = (int)lrint(c_to_f(lastPacket.ect_C));
+      if (changed(prev_ectF, ectF_round)) {
+        lv_label_set_text_fmt(objects.coolant_temp, "Coolant: %d°", ectF_round);
+      }
+
       // ===== Three battery temps (two decimals, no %f) =====
       int bt1c = (int)lrintf(c_to_f(lastPacket.tb1_C) * 100.0f);
       int bt2c = (int)lrintf(c_to_f(lastPacket.tb2_C) * 100.0f);
@@ -642,11 +650,11 @@ void loop() {
       if (changed(prev_bt2c, bt2c)) label_set_centi(objects.bt2, bt2c, "°");
       if (changed(prev_bt3c, bt3c)) label_set_centi(objects.bt3, bt3c, "°");
 
-      // ===== Battery V/A integer labels =====
-      int battery_voltage = (int)lrintf(lastPacket.hv_voltage_V);
-      int battery_amperage = (int)lrintf(lastPacket.hv_current_A);
-      if (changed(prev_batt_v, battery_voltage)) lv_label_set_text_fmt(objects.battery_voltage, "%dV", battery_voltage);
-      if (changed(prev_batt_a, battery_amperage)) lv_label_set_text_fmt(objects.battery_amperage, "%dA", battery_amperage);
+      // ===== Battery V/A labels (two decimals, no %f) =====
+      int battery_voltage_centi = (int)lrintf(lastPacket.hv_voltage_V * 100.0f);
+      int battery_amperage_centi = (int)lrintf(lastPacket.hv_current_A * 100.0f);
+      if (changed(prev_batt_v_centi, battery_voltage_centi)) label_set_centi(objects.battery_voltage, battery_voltage_centi, "V");
+      if (changed(prev_batt_a_centi, battery_amperage_centi)) label_set_centi(objects.battery_amperage, battery_amperage_centi, "A");
 
       // ===== Shift LED strip =====
       updateShiftStrip(lastPacket.ebar, (float)rpm_val);
@@ -694,13 +702,13 @@ void loop() {
       // ===== Ebar & drain labels (on change) =====
       int ebar_round = (int)lrintf(lastPacket.ebar);
       if (changed(prev_ebar, ebar_round)) {
-        lv_label_set_text_fmt(objects.ebar_label, "Ebar: %d", ebar_round);
+        lv_label_set_text_fmt(objects.ebar_label, "%d", ebar_round);
         // update ebar bar
         lv_bar_set_value(objects.ebar_bar, ebar_round, LV_ANIM_OFF);
       };
-\
-      int drain_round = (int)lrintf(lastPacket.est);
-      if (changed(prev_est, drain_round)) lv_label_set_text_fmt(objects.energy_drain, "Mode: %d", drain_round);
+
+      // int drain_round = (int)lrintf(lastPacket.est);
+      // if (changed(prev_est, drain_round)) lv_label_set_text_fmt(objects.energy_drain, "Mode: %d", drain_round);
 
 
 
