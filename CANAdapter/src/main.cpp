@@ -126,12 +126,6 @@ enum : uint8_t {
     STEER_BACK  = 0x06
 };
 
-enum : uint8_t {
-    WINDOW_MODE_ALL = 0,
-    WINDOW_MODE_FRONT_PAIR = 1,
-    WINDOW_MODE_REAR_PAIR = 2
-};
-
 /////////////////////////////////////////////////////////////global variables//////////////////////////////////////////////////////////
 // Timing control for polling
 unsigned long lastPollTime = 0;
@@ -147,31 +141,19 @@ const unsigned long TIMEOUT_MS = 300; // a little more slack for multi-frame
 int num_polling_sensors = 6; // number of sensors that get polled
 
 // Steering controls always enabled
-unsigned long lastEnterPressMs = 0;
-const unsigned long ENTER_DOUBLE_PRESS_MS = 700;
-uint8_t windowControlMode = WINDOW_MODE_ALL;
-
 // Button state machine
 uint8_t currentSteerCode = STEER_NONE;
 unsigned long currentSteerCodeStartMs = 0;
 
-// Cluster buzzer feedback pattern (tunable)
-bool clusterBuzzerIsOn = false;
-bool clusterBeepPatternActive = false;
-uint8_t clusterBeepsRemaining = 0;
-unsigned long clusterBeepNextToggleMs = 0;
-const unsigned long CLUSTER_BEEP_ON_MS = 90;
-const unsigned long CLUSTER_BEEP_OFF_MS = 120;
-
 // Wireless buzzer hold-to-horn behavior (tunable)
 bool backHoldActive = false;
 unsigned long backHoldStartMs = 0;
-const unsigned long BACK_HORN_HOLD_MS = 80;
+const unsigned long BACK_HORN_HOLD_MS = 200;
 bool wirelessBuzzerOn = false;
 
 // Window hold/pulse behavior (tunable)
-const unsigned long WINDOW_HOLD_TO_MOVE_MS = 300;
-const unsigned long WINDOW_PULSE_MS = 1100;
+const unsigned long WINDOW_HOLD_TO_MOVE_MS = 200;
+const unsigned long WINDOW_PULSE_MS = 500;
 uint8_t windowActiveDirCode = STEER_NONE; // STEER_UP / STEER_DOWN while active
 unsigned long windowLastPulseMs = 0;
 const unsigned long WINDOW_GROUP_FRAME_GAP_MS = 100;
@@ -216,46 +198,6 @@ inline void advanceAfterDecode(unsigned long now) {
     }
 }
 
-inline void sendClusterBuzzerCommand(bool on) {
-    if (clusterBuzzerIsOn == on) return;
-    clusterBuzzerIsOn = on;
-    if (on) {
-        sendCANFrame(0x7B0, {0x07,0x30,0x07,0x00,0x01,0x01,0x00,0x00});
-    } else {
-        sendCANFrame(0x7B0, {0x07,0x30,0x07,0x00,0x01,0x00,0x00,0x00});
-    }
-}
-
-void playClusterBeeps(uint8_t count, unsigned long now) {
-    if (count == 0) return;
-    sendClusterBuzzerCommand(false); // restart pattern from quiet state
-    clusterBeepPatternActive = true;
-    clusterBeepsRemaining = count;
-    clusterBeepNextToggleMs = now; // start immediately
-}
-
-void processClusterBeeps(unsigned long now) {
-    if (!clusterBeepPatternActive) return;
-    if (now < clusterBeepNextToggleMs) return;
-
-    if (!clusterBuzzerIsOn) {
-        sendClusterBuzzerCommand(true);
-        clusterBeepNextToggleMs = now + CLUSTER_BEEP_ON_MS;
-        return;
-    }
-
-    // We were on; turn off and count one complete beep.
-    sendClusterBuzzerCommand(false);
-    if (clusterBeepsRemaining > 0) clusterBeepsRemaining--;
-
-    if (clusterBeepsRemaining == 0) {
-        clusterBeepPatternActive = false;
-        return;
-    }
-
-    clusterBeepNextToggleMs = now + CLUSTER_BEEP_OFF_MS;
-}
-
 inline void sendWirelessBuzzerCommand(bool on) {
     if (wirelessBuzzerOn == on) return;
     wirelessBuzzerOn = on;
@@ -270,29 +212,17 @@ inline void sendWindowCommand(uint8_t sub, uint8_t cmd) {
     sendCANFrame(0x750, {sub,0x04,0x30,0x01,0x01,cmd,0x00,0x00});
 }
 
-uint8_t buildWindowGroupSubs(uint8_t mode, uint8_t* outSubs) {
-    switch (mode) {
-        case WINDOW_MODE_FRONT_PAIR:
-            outSubs[0] = 0x90;
-            outSubs[1] = 0x91;
-            return 2;
-        case WINDOW_MODE_REAR_PAIR:
-            outSubs[0] = 0x93;
-            outSubs[1] = 0x92;
-            return 2;
-        case WINDOW_MODE_ALL:
-        default:
-            outSubs[0] = 0x90;
-            outSubs[1] = 0x91;
-            outSubs[2] = 0x93;
-            outSubs[3] = 0x92;
-            return 4;
-    }
+uint8_t buildWindowGroupSubs(uint8_t* outSubs) {
+    outSubs[0] = 0x90;
+    outSubs[1] = 0x91;
+    outSubs[2] = 0x93;
+    outSubs[3] = 0x92;
+    return 4;
 }
 
-void scheduleWindowGroupCommand(uint8_t mode, uint8_t cmd, unsigned long now) {
+void scheduleWindowGroupCommand(uint8_t cmd, unsigned long now) {
     windowGroupCmd = cmd;
-    windowGroupSubCount = buildWindowGroupSubs(mode, windowGroupSubs);
+    windowGroupSubCount = buildWindowGroupSubs(windowGroupSubs);
     windowGroupSubIndex = 0;
     windowGroupNextTxMs = now;
     windowGroupTxActive = (windowGroupSubCount > 0);
@@ -315,13 +245,12 @@ void processWindowGroupTx(unsigned long now) {
 
 void stopActiveWindowMotion() {
     if (windowActiveDirCode == STEER_NONE) return;
-    scheduleWindowGroupCommand(windowControlMode, 0x00, millis());
+    scheduleWindowGroupCommand(0x00, millis());
     windowActiveDirCode = STEER_NONE;
 }
 
 void processWirelessHorn(unsigned long now) {
     if (backHoldActive && !wirelessBuzzerOn && (now - backHoldStartMs) >= BACK_HORN_HOLD_MS) {
-        playClusterBeeps(1, now);
         sendWirelessBuzzerCommand(true);
     }
 
@@ -351,16 +280,20 @@ void processWindowControl(unsigned long now) {
 
     if (windowActiveDirCode != wantedDir) {
         stopActiveWindowMotion();
-        scheduleWindowGroupCommand(windowControlMode, cmd, now);
+        scheduleWindowGroupCommand(cmd, now);
         windowActiveDirCode = wantedDir;
         windowLastPulseMs = now;
         return;
     }
 
     if ((now - windowLastPulseMs) >= WINDOW_PULSE_MS) {
-        scheduleWindowGroupCommand(windowControlMode, cmd, now);
+        scheduleWindowGroupCommand(cmd, now);
         windowLastPulseMs = now;
     }
+}
+
+inline bool isWindowMotionBusy() {
+    return (windowActiveDirCode != STEER_NONE) || windowGroupTxActive;
 }
 
 void handleSteeringButton(uint8_t code, unsigned long now) {
@@ -384,27 +317,9 @@ void handleSteeringButton(uint8_t code, unsigned long now) {
         sendWirelessBuzzerCommand(false);
     }
 
-    if (pressEdge && code == STEER_ENTER) {
-        if (lastEnterPressMs != 0 && (now - lastEnterPressMs) <= ENTER_DOUBLE_PRESS_MS) {
-            windowControlMode = (windowControlMode + 1) % 3;
-            uint8_t beeps = (windowControlMode == WINDOW_MODE_ALL) ? 3 :
-                            (windowControlMode == WINDOW_MODE_FRONT_PAIR) ? 1 : 2;
-            playClusterBeeps(beeps, now);
-            lastEnterPressMs = 0;
-            Serial.printf("Window mode: %u\n", (unsigned)(windowControlMode + 1));
-        } else {
-            lastEnterPressMs = now;
-        }
-    }
-
 }
 
 void processSteeringControlState(unsigned long now) {
-    if (lastEnterPressMs != 0 && (now - lastEnterPressMs) > ENTER_DOUBLE_PRESS_MS) {
-        lastEnterPressMs = 0;
-    }
-
-    processClusterBeeps(now);
     processWirelessHorn(now);
     processWindowGroupTx(now);
     processWindowControl(now);
@@ -532,18 +447,17 @@ void loop() {
     CAN_FRAME can_message;
     unsigned long currentTime = millis();
     processSteeringControlState(currentTime);
+    const bool windowBusy = isWindowMotionBusy();
 
     // STEP 1: Handle polling (independent of CAN messages)
-    if (!waiting && currentTime - lastPollTime >= POLL_INTERVAL) {
+    if (!windowBusy && !waiting && currentTime - lastPollTime >= POLL_INTERVAL) {
         sendSensorRequest(sensor_num);
         waiting = true;
         requestTimeout = currentTime;
     }
 
     // STEP 2: Handle timeout
-    if (waiting && currentTime - requestTimeout >= TIMEOUT_MS) {
-        Serial.println("Timeout on sensor " + String(sensor_num));
-
+    if (!windowBusy && waiting && currentTime - requestTimeout >= TIMEOUT_MS) {
         // Move to next sensor
         sensor_num++;
         if (sensor_num >= num_polling_sensors) {
@@ -558,7 +472,7 @@ void loop() {
     }
 
     // STEP 3: Process CAN messages
-    if (CAN0.read(can_message)) {
+    while (CAN0.read(can_message)) {
 
         // force battery fan on
         // sendCANFrame(0x7E2, {0x06,0x30,0x81,0x06,0x06,6,0x00,0x00});
@@ -872,7 +786,7 @@ void loop() {
             default:
                 break;
         }
-    }
+    } // end CAN read drain loop
 
     // fan override every 2 seconds if enabled
     static unsigned long lastFanOverrideTime = 0;
