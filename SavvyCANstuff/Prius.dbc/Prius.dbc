@@ -1,0 +1,133 @@
+VERSION ""
+
+
+BS_:
+
+BU_:
+
+
+BO_ 170 V_RAD: 8 Vector__XXX
+ SG_ V_RAD_4 : 7|16@0+ (0.01,-67.67) [-67.67|587.68] "km/h" Vector__XXX
+ SG_ V_RAD_3 : 23|16@0+ (0.01,-67.67) [-67.67|587.68] "km/h" Vector__XXX
+ SG_ V_RAD_2 : 39|16@0+ (0.01,-67.67) [-67.67|587.68] "km/h" Vector__XXX
+ SG_ V_RAD_1 : 55|16@0+ (0.01,-67.67) [-67.67|587.68] "km/h" Vector__XXX
+
+BO_ 1595 Time: 8 Vector__XXX
+ SG_ T_REL : 55|16@0+ (0.1,0) [0|6553.5] "s" Vector__XXX
+
+BO_ 182 V: 8 Vector__XXX
+ SG_ VS : 7|16@0+ (0.01,0) [0|655.35] "km/h" Vector__XXX
+
+BO_ 560 Unbekannt_01: 8 Vector__XXX
+ SG_ MILEAGE_COUNTER : 7|16@0+ (0.01,0) [0|655.35] "m" Vector__XXX
+
+BO_ 295 Unbekannt_02: 8 Vector__XXX
+ SG_ STATE_GEARSHIFT : 45|2@0+ (1,0) [0|3] "" Vector__XXX
+ SG_ Prozent_01 : 39|8@0- (1,0) [-128|127] "" Vector__XXX
+
+BO_ 36 Unbekannt_03: 8 Vector__XXX
+ SG_ Strom : 40|8@1- (1,0) [-128|127] "" Vector__XXX
+
+BO_ 608 Unbekannt_04: 8 Vector__XXX
+ SG_ Unbekannt_2 : 15|16@0- (1,0) [-32768|32767] "" Vector__XXX
+ SG_ Unbekannt_1 : 47|16@0- (1,0) [-32768|32767] "" Vector__XXX
+
+BO_ 583 Display_1: 5 Vector__XXX
+ SG_ BAR_ENERGY : 15|8@0- (1,0) [-128|127] "" Vector__XXX
+ SG_ STATE_ENERGYDRAIN : 3|4@0+ (1,0) [0|15] "" Vector__XXX
+
+BO_ 452 Unbekannt_06: 8 Vector__XXX
+ SG_ Unbekannt_1 : 7|16@0+ (1,0) [0|65535] "" Vector__XXX
+
+BO_ 180 Unbekannt_07: 8 Vector__XXX
+ SG_ Zaehler : 39|8@0+ (1,0) [0|255] "" Vector__XXX
+ SG_ VS_HIGH : 47|16@0+ (0.01,0) [0|655.35] "km/h" Vector__XXX
+
+BO_ 1176 Unbekannt_08: 8 Vector__XXX
+ SG_ Unbekannt_1 : 15|16@0+ (1,0) [0|65535] "" Vector__XXX
+
+BO_ 581 Unbekannt_09: 5 Vector__XXX
+ SG_ Byte_2 : 23|8@0+ (1,0) [0|255] "" Vector__XXX
+ SG_ Unbekannt_1 : 7|16@0- (1,0) [-32768|32767] "" Vector__XXX
+
+BO_ 947 Unbekannt_10: 3 Vector__XXX
+ SG_ Unbekannt_1 : 23|8@0+ (1,0) [0|255] "" Vector__XXX
+
+BO_ 548 Bremse_1: 8 Vector__XXX
+ SG_ LV_BLS : 5|1@1- (1,0) [0|1] "" Vector__XXX
+ SG_ BRAKE : 40|8@1+ (1,0) [0|255] "" Vector__XXX
+
+BO_ 800 Unbekannt_12: 8 Vector__XXX
+ SG_ Unbekannt_1 : 39|8@0- (1,0) [-128|127] "" Vector__XXX
+
+BO_ 1568 Unbekannt_13: 8 Vector__XXX
+ SG_ Unbekannt_1 : 31|8@0+ (1,0) [0|255] "" Vector__XXX
+
+BO_ 979 Unbekannt_14: 2 Vector__XXX
+ SG_ Unbekannt_1 : 7|16@0+ (1,0) [0|65535] "" Vector__XXX
+
+BO_ 1177 Unbekannt_15: 8 Vector__XXX
+ SG_ Byte_3 : 31|8@0- (1,0) [-128|127] "" Vector__XXX
+ SG_ Byte_1 : 15|8@0- (1,0) [-128|127] "" Vector__XXX
+ SG_ Byte_2 : 23|8@0- (1,0) [-128|127] "" Vector__XXX
+ SG_ Byte_0 : 7|8@0- (1,0) [-128|127] "" Vector__XXX
+
+BO_ 1180 Unbekannt_16: 8 Vector__XXX
+ SG_ Byte_3 : 31|8@0+ (1,0) [0|255] "" Vector__XXX
+ SG_ Byte_2 : 23|8@0+ (1,0) [0|255] "" Vector__XXX
+ SG_ Byte_1 : 15|8@0+ (1,0) [0|255] "" Vector__XXX
+ SG_ Byte_0 : 7|8@0+ (1,0) [0|255] "" Vector__XXX
+
+BO_ 1184 V_RAD_2: 8 Vector__XXX
+ SG_ V_RAD_4 : 31|8@0+ (1,0) [0|255] "" Vector__XXX
+ SG_ V_RAD_3 : 39|8@0+ (1,0) [0|255] "" Vector__XXX
+ SG_ V_RAD_2 : 47|8@0+ (1,0) [0|255] "" Vector__XXX
+ SG_ V_RAD_1 : 55|8@0+ (1,0) [0|255] "" Vector__XXX
+
+BO_ 1179 Unbekannt_17: 8 Vector__XXX
+ SG_ POSITION_THROTTLE : 7|8@0+ (0.392,0) [0|99.96] "" Vector__XXX
+
+BO_ 1181 Unbekannt_18: 8 Vector__XXX
+ SG_ Byte_0 : 7|8@0+ (1,0) [0|255] "" Vector__XXX
+
+BO_ 37 Lenkung_1: 8 Vector__XXX
+ SG_ STEERING_ANGLE : 1|10@0- (3,0) [-1536|1533] "°" Vector__XXX
+
+BO_ 1191 Unbekannt_20: 8 Vector__XXX
+ SG_ Byte_0 : 7|8@0+ (1,0) [0|255] "" Vector__XXX
+ SG_ Byte_2 : 23|8@0+ (1,0) [0|255] "" Vector__XXX
+
+BO_ 953 Unbekannt_21: 3 Vector__XXX
+ SG_ Zaehler : 7|8@0+ (1,0) [0|255] "" Vector__XXX
+
+BO_ 1185 Unbekannt_22: 8 Vector__XXX
+ SG_ Byte_3 : 31|8@0- (1,0) [-128|127] "" Vector__XXX
+ SG_ Byte_2 : 23|8@0- (1,0) [-128|127] "" Vector__XXX
+ SG_ Byte_1 : 15|8@0- (1,0) [-128|127] "" Vector__XXX
+ SG_ Byte_0 : 7|8@0- (1,0) [-128|127] "" Vector__XXX
+
+BO_ 1552 Unbekannt_23: 8 Vector__XXX
+ SG_ VS : 23|8@0+ (1,0) [0|255] "" Vector__XXX
+
+BO_ 1186 Unbekannt_24: 8 Vector__XXX
+ SG_ Byte_3 : 31|8@0+ (1,0) [0|255] "" Vector__XXX
+ SG_ Byte_2 : 23|8@0+ (1,0) [0|255] "" Vector__XXX
+
+BO_ 1178 Unbekannt_25: 8 Vector__XXX
+ SG_ Byte_4 : 39|8@0+ (1,0) [0|255] "" Vector__XXX
+ SG_ Byte_0 : 7|8@0+ (1,0) [0|255] "" Vector__XXX
+
+BO_ 1190 Unbekannt_26: 8 Vector__XXX
+ SG_ Unbek_2 : 19|4@0+ (1,0) [0|15] "" Vector__XXX
+ SG_ Unbek_1 : 43|4@0+ (1,0) [0|15] "" Vector__XXX
+ SG_ CTR : 7|2@0+ (1,0) [0|3] "" Vector__XXX
+
+BO_ 944 Unbekannt_27: 6 Vector__XXX
+ SG_ SOC : 15|8@0+ (1,0) [0|255] "" Vector__XXX
+
+BO_ 1574 Tueren: 8 Vector__XXX
+ SG_ STATE_DOORS : 21|2@0+ (1,0) [0|3] "" Vector__XXX
+
+
+
+
