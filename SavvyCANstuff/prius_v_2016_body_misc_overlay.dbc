@@ -1,0 +1,112 @@
+VERSION "2016 Prius v body/cabin overlay, reverse engineered from local captures"
+
+
+NS_ :
+    NS_DESC_
+    CM_
+    BA_DEF_
+    BA_
+    VAL_
+    CAT_DEF_
+    CAT_
+    FILTER
+    BA_DEF_DEF_
+    EV_DATA_
+    ENVVAR_DATA_
+    SGTYPE_
+    SGTYPE_VAL_
+    BA_DEF_SGTYPE_
+    BA_SGTYPE_
+    SIG_TYPE_REF_
+    SIG_GROUP_
+    SIG_VALTYPE_
+    SIGTYPE_VALTYPE_
+    BO_TX_BU_
+    BA_DEF_REL_
+    BA_REL_
+    BA_DEF_DEF_REL_
+    BU_SG_REL_
+    BU_EV_REL_
+    BU_BO_REL_
+    SG_MUL_VAL_
+
+BS_:
+
+BU_: CGW MET HVAC BODY SWC AVN
+
+
+BO_ 583 PRIUSV_ENERGY_DISPLAY: 5 MET
+ SG_ ENERGY_FLOW_STATE : 0|4@1+ (1,0) [0|15] "" MET
+ SG_ ENERGY_BAR : 8|8@1- (1,0) [-128|127] "" MET
+ SG_ ENERGY_BAR_MODE_RAW : 16|8@1+ (1,0) [0|255] "" MET
+
+BO_ 897 PRIUSV_HVAC_BUTTON_STATUS: 8 HVAC
+ SG_ HVAC_BUTTON_BYTE_2 : 8|8@1+ (1,0) [0|255] "" HVAC
+ SG_ HVAC_BUTTON_CODE_RAW : 16|8@1+ (1,0) [0|255] "" HVAC
+ SG_ HVAC_BUTTON_VALID_OR_EVENT : 56|8@1+ (1,0) [0|255] "" HVAC
+
+BO_ 933 PRIUSV_AVN_COMPASS_STATUS: 8 AVN
+ SG_ AVN_COMPASS_OR_HEADING_RAW : 48|8@1+ (1,0) [0|255] "" AVN
+
+BO_ 944 PRIUSV_HVAC_ACN1S07_OVERLAY: 6 HVAC
+ SG_ HVAC_TEMP_RAW_D2 : 8|8@1+ (1,0) [0|255] "" HVAC
+ SG_ HVAC_AMBIENT_OR_TEMP_RAW_D4 : 24|8@1+ (1,0) [0|255] "" HVAC
+ SG_ HVAC_STATUS_BYTE_6 : 40|8@1+ (1,0) [0|255] "" HVAC
+
+BO_ 1179 PRIUSV_DRIVE_MODE_STATUS: 8 CGW
+ SG_ EV_MODE_ACTIVE : 33|1@1+ (1,0) [0|1] "" CGW
+ SG_ PWR_MODE_ACTIVE : 34|1@1+ (1,0) [0|1] "" CGW
+ SG_ ECO_MODE_ACTIVE : 35|1@1+ (1,0) [0|1] "" CGW
+ SG_ DRIVE_MODE_FLAGS_RAW : 32|8@1+ (1,0) [0|255] "" CGW
+
+BO_ 1422 PRIUSV_STEERING_WHEEL_BUTTONS: 8 SWC
+ SG_ STEERING_BUTTON_CODE : 40|8@1+ (1,0) [0|255] "" SWC
+
+BO_ 1552 PRIUSV_DIMMER_RHEOSTAT_STATUS: 8 MET
+ SG_ DIMMER_EVENT_OR_ACTIVE_FLAG : 15|1@1+ (1,0) [0|1] "" MET
+ SG_ DIMMER_LEVEL_RAW : 16|8@1+ (1,0) [0|255] "" MET
+ SG_ DIMMER_DOWN_OR_DISPLAY_OFF_RAW : 24|8@1+ (1,0) [0|255] "" MET
+ SG_ DIMMER_BYTE_6_RAW : 40|8@1+ (1,0) [0|255] "" MET
+ SG_ DIMMER_BYTE_7_RAW : 48|8@1+ (1,0) [0|255] "" MET
+
+BO_ 1568 PRIUSV_LIGHT_AMBIENT_STATUS: 8 BODY
+ SG_ AMBIENT_LIGHT_RAW : 23|16@0+ (1,0) [0|65535] "" BODY
+ SG_ ILLUMINATION_DIM_ACTIVE : 38|1@1+ (1,0) [0|1] "" BODY
+ SG_ LIGHT_STATUS_BYTE_8 : 56|8@1+ (1,0) [0|255] "" BODY
+
+BO_ 1569 PRIUSV_LOCK_BODY_EVENT_TENTATIVE: 8 BODY
+ SG_ BODY_EVENT_ACTIVE_FLAG : 15|1@1+ (1,0) [0|1] "" BODY
+ SG_ BODY_EVENT_CODE_RAW : 16|8@1+ (1,0) [0|255] "" BODY
+
+BO_ 1592 PRIUSV_BODY_STATUS_638_TENTATIVE: 8 BODY
+ SG_ BODY638_EVENT_ACTIVE_FLAG : 15|1@1+ (1,0) [0|1] "" BODY
+ SG_ BODY638_STATUS_NIBBLE : 16|4@1+ (1,0) [0|15] "" BODY
+ SG_ BODY638_STATE_BYTE_5 : 32|8@1+ (1,0) [0|255] "" BODY
+
+BO_ 1728 PRIUSV_BODY_LIGHTING_6C0_TENTATIVE: 8 BODY
+ SG_ BODY6C0_TRANSIENT_FLAG : 15|1@1+ (1,0) [0|1] "" BODY
+ SG_ BODY6C0_STATE_BYTE_4 : 24|8@1+ (1,0) [0|255] "" BODY
+
+
+CM_ BO_ 583 "Confirmed from firmware and full-drive behavior. D1 low nibble is energy-flow state; D2 is signed energy bar value.";
+CM_ BO_ 897 "Toyota reference names this ACN1S04. In this vehicle it appears rarely and changes on HVAC/control events. Raw fields only until button mapping is confirmed.";
+CM_ BO_ 933 "Toyota reference names this AVN1S13. D7 changes through even values 0x00..0x3E and is likely compass/heading display state.";
+CM_ BO_ 944 "Toyota reference names this ACN1S07. Observed values suggest HVAC temperature/status broadcast; exact units remain tentative for this Prius v.";
+CM_ BO_ 1179 "Drive mode flags confirmed from local firmware and mode-buttons capture: D5 bit1 EV, bit2 PWR, bit3 ECO.";
+CM_ BO_ 1422 "Steering wheel directional/enter/back buttons confirmed by steerbuttons1.csv. Button code is D6.";
+CM_ BO_ 1552 "Locally used as dimmer/rheostat status. D4==0 was used in firmware as display-off/dimmer-down condition; full-drive data shows D3 ramping as a level/counter.";
+CM_ BO_ 1568 "Ambient light/status. brightness sensor capture confirms D3:D4 raw light; dim capture shows D5 bit6 B0/F0 transition for illumination dim state.";
+CM_ BO_ 1569 "Tentative body/lock event candidate. README already suspected 0x621 is related to door locking/unlocking; full log only has four non-idle event frames.";
+CM_ BO_ 1592 "Tentative body status/event candidate near the 0x620 body cluster. Needs targeted capture.";
+CM_ BO_ 1728 "Tentative body/lighting state. D4 toggles between 0x60 and 0xA0; D2 bit7 appears only as a transient event.";
+
+CM_ SG_ 1568 AMBIENT_LIGHT_RAW "Interpreted as D3<<8 | D4. Focused brightness capture ranges roughly 0x0045..0x024F.";
+CM_ SG_ 1552 DIMMER_LEVEL_RAW "D3 changes 0x00..0x4D in the full drive and moves in ramps; likely rheostat/level or related counter.";
+CM_ SG_ 944 HVAC_TEMP_RAW_D2 "Observed 0xA3..0xA7 in full drive. Toyota reference ACN1S07 TR_TEMP uses a temperature-like signal here, but exact Prius v unit requires validation.";
+CM_ SG_ 944 HVAC_AMBIENT_OR_TEMP_RAW_D4 "Observed 0x49..0x4B in full drive. Likely HVAC temperature/ambient-adjacent raw value.";
+
+VAL_ 1422 STEERING_BUTTON_CODE 0 "none" 1 "left" 2 "right" 3 "up" 4 "down" 5 "enter" 6 "back" ;
+VAL_ 1179 EV_MODE_ACTIVE 0 "off" 1 "on" ;
+VAL_ 1179 PWR_MODE_ACTIVE 0 "off" 1 "on" ;
+VAL_ 1179 ECO_MODE_ACTIVE 0 "off" 1 "on" ;
+VAL_ 1568 ILLUMINATION_DIM_ACTIVE 0 "not_dimmed" 1 "dimmed" ;
