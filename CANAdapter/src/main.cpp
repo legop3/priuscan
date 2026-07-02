@@ -3,6 +3,9 @@
 #include <WiFi.h>
 #include <esp_now.h>
 
+#include "can_tx.h"
+#include "steering_controls.h"
+
 // ploo woo goo woo
 
 
@@ -33,7 +36,7 @@ inline uint16_t Process_Endian(uint8_t byte_msb, uint8_t byte_lsb) {
   return (byte_msb << 8) | byte_lsb;
 }
 
-void sendCANFrame(uint32_t canID, const uint8_t* data, uint8_t dataLength, bool extended = false, bool rtr = false) {
+void sendCANFrame(uint32_t canID, const uint8_t* data, uint8_t dataLength, bool extended, bool rtr) {
     // Use a local frame so back-to-back sends don't overwrite a shared TX buffer.
     CAN_FRAME txFrame = {};
     txFrame.id = canID;
@@ -67,7 +70,7 @@ inline void sendFlowControl(uint32_t req_id, uint8_t blockSize=0x00, uint8_t stM
 }
 
 // Optimized overload using stack array
-void sendCANFrame(uint32_t canID, std::initializer_list<uint8_t> data, bool extended = false, bool rtr = false) {
+void sendCANFrame(uint32_t canID, std::initializer_list<uint8_t> data, bool extended, bool rtr) {
     uint8_t dataArray[8];
     uint8_t length = (data.size() > 8) ? 8 : data.size();
 
@@ -118,17 +121,6 @@ void sendSensorRequest(uint8_t sensorNum) {
     }
 }
 
-// Steering-wheel button decode on 0x58E D6
-enum : uint8_t {
-    STEER_NONE  = 0x00,
-    STEER_LEFT  = 0x01,
-    STEER_RIGHT = 0x02,
-    STEER_UP    = 0x03,
-    STEER_DOWN  = 0x04,
-    STEER_ENTER = 0x05,
-    STEER_BACK  = 0x06
-};
-
 /////////////////////////////////////////////////////////////global variables//////////////////////////////////////////////////////////
 uint8_t fanOverrideEnable = 0;
 
@@ -159,33 +151,6 @@ const unsigned long sensorIntervalMs[SENSOR_COUNT] = {
   450  // Fan mode
 };
 unsigned long sensorNextDueMs[SENSOR_COUNT] = {0};
-
-// Steering controls always enabled
-// Button state machine
-uint8_t currentSteerCode = STEER_NONE;
-unsigned long currentSteerCodeStartMs = 0;
-
-// Wireless buzzer hold-to-horn behavior (tunable)
-bool backHoldActive = false;
-unsigned long backHoldStartMs = 0;
-const unsigned long BACK_HORN_HOLD_MS = 200;
-bool wirelessBuzzerOn = false;
-
-// Window hold/pulse behavior (tunable)
-const unsigned long WINDOW_HOLD_TO_MOVE_MS = 150;
-uint8_t windowActiveDirCode = STEER_NONE; // STEER_UP / STEER_DOWN while active
-const unsigned long WINDOW_ACK_TIMEOUT_MS = 60;
-const uint8_t WINDOW_MAX_RETRIES = 2;
-
-// ACK-driven sender for grouped window commands.
-bool windowGroupTxActive = false;
-uint8_t windowGroupCmd = 0x00;
-uint8_t windowGroupSubs[4] = {0};
-uint8_t windowGroupSubCount = 0;
-uint8_t windowGroupSubIndex = 0;
-bool windowGroupAwaitingAck = false;
-uint8_t windowGroupRetryCount = 0;
-unsigned long windowGroupLastSendMs = 0;
 
 // g_sensors indexes
 enum {
@@ -236,159 +201,6 @@ int8_t pickNextDueSensor(unsigned long now) {
     }
     return best;
 }
-
-inline void sendWirelessBuzzerCommand(bool on) {
-    if (wirelessBuzzerOn == on) return;
-    wirelessBuzzerOn = on;
-    if (on) {
-        sendCANFrame(0x750, {0x40,0x04,0x30,0x14,0x00,0x80,0x00,0x00});
-    } else {
-        sendCANFrame(0x750, {0x40,0x04,0x30,0x14,0x00,0x00,0x00,0x00});
-    }
-}
-
-inline void sendWindowCommand(uint8_t sub, uint8_t cmd) {
-    sendCANFrame(0x750, {sub,0x04,0x30,0x01,0x01,cmd,0x00,0x00});
-}
-
-uint8_t buildWindowGroupSubs(uint8_t* outSubs) {
-    outSubs[0] = 0x90;
-    outSubs[1] = 0x91;
-    outSubs[2] = 0x93;
-    outSubs[3] = 0x92;
-    return 4;
-}
-
-void scheduleWindowGroupCommand(uint8_t cmd, unsigned long now) {
-    windowGroupCmd = cmd;
-    windowGroupSubCount = buildWindowGroupSubs(windowGroupSubs);
-    windowGroupSubIndex = 0;
-    windowGroupAwaitingAck = false;
-    windowGroupRetryCount = 0;
-    windowGroupLastSendMs = now;
-    windowGroupTxActive = (windowGroupSubCount > 0);
-}
-
-void processWindowGroupTx(unsigned long now) {
-    if (!windowGroupTxActive) return;
-
-    if (!windowGroupAwaitingAck) {
-        sendWindowCommand(windowGroupSubs[windowGroupSubIndex], windowGroupCmd);
-        windowGroupAwaitingAck = true;
-        windowGroupLastSendMs = now;
-        return;
-    }
-
-    if ((now - windowGroupLastSendMs) < WINDOW_ACK_TIMEOUT_MS) return;
-
-    if (windowGroupRetryCount < WINDOW_MAX_RETRIES) {
-        windowGroupRetryCount++;
-        sendWindowCommand(windowGroupSubs[windowGroupSubIndex], windowGroupCmd);
-        windowGroupLastSendMs = now;
-        return;
-    }
-
-    // Give up on this subaddress and continue with the next one.
-    windowGroupRetryCount = 0;
-    windowGroupAwaitingAck = false;
-    windowGroupSubIndex++;
-    if (windowGroupSubIndex >= windowGroupSubCount) {
-        windowGroupTxActive = false;
-    }
-}
-
-void onWindowAck(uint8_t sub) {
-    if (!windowGroupTxActive || !windowGroupAwaitingAck) return;
-    if (windowGroupSubIndex >= windowGroupSubCount) return;
-    if (sub != windowGroupSubs[windowGroupSubIndex]) return;
-
-    windowGroupRetryCount = 0;
-    windowGroupAwaitingAck = false;
-    windowGroupSubIndex++;
-    if (windowGroupSubIndex >= windowGroupSubCount) {
-        windowGroupTxActive = false;
-    }
-}
-
-void handleBodyAckFrame(const CAN_FRAME& can_message) {
-    // Positive response for window command looks like:
-    // SS 02 70 01 00 00 00 00
-    if (can_message.length < 4) return;
-    const uint8_t* d = can_message.data.byte;
-    if (d[2] == 0x70 && d[3] == 0x01) {
-        onWindowAck(d[0]); // subaddress
-    }
-}
-
-void processWirelessHorn(unsigned long now) {
-    if (backHoldActive && !wirelessBuzzerOn && (now - backHoldStartMs) >= BACK_HORN_HOLD_MS) {
-        sendWirelessBuzzerCommand(true);
-    }
-
-    if (!backHoldActive && wirelessBuzzerOn) {
-        sendWirelessBuzzerCommand(false);
-    }
-}
-
-void processWindowControl(unsigned long now) {
-    const bool holdingUp = (currentSteerCode == STEER_UP);
-    const bool holdingDown = (currentSteerCode == STEER_DOWN);
-    const bool holdingDir = holdingUp || holdingDown;
-
-    if (!holdingDir) {
-        // Re-arm one-shot logic once direction is released.
-        windowActiveDirCode = STEER_NONE;
-        return;
-    }
-
-    const unsigned long heldMs = now - currentSteerCodeStartMs;
-    if (heldMs < WINDOW_HOLD_TO_MOVE_MS) {
-        return;
-    }
-
-    uint8_t wantedDir = holdingUp ? STEER_UP : STEER_DOWN;
-    uint8_t cmd = holdingUp ? 0x80 : 0x40;
-
-    // One-shot per hold: send once after hold threshold, then wait for release.
-    if (windowActiveDirCode == STEER_NONE) {
-        scheduleWindowGroupCommand(cmd, now);
-        windowActiveDirCode = wantedDir;
-    }
-}
-
-inline bool isWindowMotionBusy() {
-    return windowGroupTxActive;
-}
-
-void handleSteeringButton(uint8_t code, unsigned long now) {
-    if (code == currentSteerCode) {
-        return;
-    }
-
-    uint8_t prev = currentSteerCode;
-    currentSteerCode = code;
-    currentSteerCodeStartMs = now;
-    const bool pressEdge = (prev == STEER_NONE && code != STEER_NONE);
-    const bool releaseEdge = (prev != STEER_NONE && code == STEER_NONE);
-
-    if (pressEdge && code == STEER_BACK) {
-        backHoldActive = true;
-        backHoldStartMs = now;
-    }
-
-    if (releaseEdge && prev == STEER_BACK) {
-        backHoldActive = false;
-        sendWirelessBuzzerCommand(false);
-    }
-
-}
-
-void processSteeringControlState(unsigned long now) {
-    processWirelessHorn(now);
-    processWindowGroupTx(now);
-    processWindowControl(now);
-}
-
 
 static inline uint8_t xor_checksum(const uint8_t* p, size_t n) {
   uint8_t x = 0;
