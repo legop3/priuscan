@@ -66,7 +66,7 @@ void sendCANFrame(uint32_t canID, const uint8_t* data, uint8_t dataLength, bool 
 // helper: Flow Control (CTS)
 inline void sendFlowControl(uint32_t req_id, uint8_t blockSize=0x00, uint8_t stMin=0x00) {
   uint8_t fc[8] = {0x30, blockSize, stMin, 0,0,0,0,0}; // PCI=FC/CTS
-  sendCANFrame(req_id, fc, 8); // FC goes to the *responder* ID in our decoder (we'll use 0x7EA there)
+  sendCANFrame(req_id, fc, 8); // FC goes to the ECU's receive/request ID, e.g. 0x7E2.
 }
 
 // Optimized overload using stack array
@@ -139,18 +139,85 @@ enum : uint8_t {
 bool waiting = false;               // Are we waiting for a response?
 uint8_t currentPollSensor = SENSOR_NONE;
 unsigned long requestTimeout = 0;   // When we sent the last request
-const unsigned long TIMEOUT_MS = 300; // a little more slack for multi-frame
 
-// Per-sensor poll cadence (ms). Fast-changing values are sampled more often.
+const uint8_t fastSensors[] = {
+  SENSOR_HV_CURRENT,
+  SENSOR_HV_VOLTAGE
+};
+
+const uint8_t slowSensors[] = {
+  SENSOR_ECT,
+  SENSOR_HV_TEMPS,
+  SENSOR_SOC,
+  SENSOR_HV_FAN_MODE
+};
+
+const uint8_t FAST_POLLS_BETWEEN_SLOW_POLLS = 8;
+
+// Slow sensors are only polled when due and after enough fast polls have run.
 const unsigned long sensorIntervalMs[SENSOR_COUNT] = {
-  120, // HV current
-  320, // HV voltage (multi-frame)
-  120, // Coolant temp
-  350, // HV temps (multi-frame)
-  220, // SOC
-  450  // Fan mode
+  0,    // HV current: fast loop
+  0,    // HV voltage: fast loop
+  2000, // Coolant temp
+  5000, // HV temps (multi-frame)
+  2000, // SOC
+  5000  // Fan mode
+};
+
+const unsigned long sensorTimeoutMs[SENSOR_COUNT] = {
+  120, // HV current (multi-frame, value is in FF but we consume CF)
+  300, // HV voltage (multi-frame)
+  80,  // Coolant temp
+  300, // HV temps (multi-frame)
+  80,  // SOC
+  120  // Fan mode
 };
 unsigned long sensorNextDueMs[SENSOR_COUNT] = {0};
+uint8_t nextFastSensorIndex = 0;
+uint8_t nextSlowSensorIndex = 0;
+uint8_t fastPollsSinceSlow = 0;
+
+const bool POLL_DIAG = false;
+const unsigned long POLL_DIAG_GAP_MS = 100;
+unsigned long pollDiagLastEventMs = 0;
+unsigned long pollDiagLastRxMs = 0;
+
+const char* sensorName(uint8_t sensor) {
+    switch (sensor) {
+        case SENSOR_HV_CURRENT: return "hv_current";
+        case SENSOR_HV_VOLTAGE: return "hv_voltage";
+        case SENSOR_ECT: return "coolant";
+        case SENSOR_HV_TEMPS: return "hv_temps";
+        case SENSOR_SOC: return "soc";
+        case SENSOR_HV_FAN_MODE: return "fan_mode";
+        default: return "unknown";
+    }
+}
+
+void pollDiagMark(const char* tag, unsigned long now) {
+    if (!POLL_DIAG) return;
+    if (pollDiagLastEventMs != 0 && now - pollDiagLastEventMs >= POLL_DIAG_GAP_MS) {
+        Serial.printf("[POLL %lu] GAP tag=%s dt=%lu waiting=%u sensor=%s req_elapsed=%lu since_last_rx=%lu\n",
+                      now, tag, now - pollDiagLastEventMs, waiting ? 1 : 0,
+                      sensorName(currentPollSensor),
+                      waiting ? now - requestTimeout : 0,
+                      pollDiagLastRxMs ? now - pollDiagLastRxMs : 0);
+    }
+    pollDiagLastEventMs = now;
+}
+
+void pollDiagFrame(const char* tag, unsigned long now, const CAN_FRAME& frame) {
+    if (!POLL_DIAG) return;
+    pollDiagMark(tag, now);
+    pollDiagLastRxMs = now;
+    Serial.printf("[POLL %lu] %s sensor=%s id=0x%03X len=%u data=",
+                  now, tag, sensorName(currentPollSensor), frame.id, frame.length);
+    for (uint8_t i = 0; i < frame.length; i++) {
+        Serial.printf("%02X", frame.data.byte[i]);
+        if (i + 1 < frame.length) Serial.print(' ');
+    }
+    Serial.println();
+}
 
 // g_sensors indexes
 enum {
@@ -171,9 +238,33 @@ enum {
   IDX_MODE_PWR = 17
 };
 
+float pollSensorValueForDiag(uint8_t sensor) {
+    switch (sensor) {
+        case SENSOR_HV_CURRENT: return g_sensors[IDX_HV_CURRENT];
+        case SENSOR_HV_VOLTAGE: return g_sensors[IDX_HV_VOLTAGE];
+        case SENSOR_ECT: return g_sensors[IDX_ECT];
+        case SENSOR_HV_TEMPS: return g_sensors[IDX_HV_TB1_C];
+        case SENSOR_SOC: return g_sensors[8];
+        case SENSOR_HV_FAN_MODE: return g_sensors[IDX_BFS];
+        default: return 0.0f;
+    }
+}
+
 inline void completeCurrentSensor(unsigned long now) {
     if (currentPollSensor != SENSOR_NONE && currentPollSensor < SENSOR_COUNT) {
-        sensorNextDueMs[currentPollSensor] = now + sensorIntervalMs[currentPollSensor];
+        pollDiagMark("DONE", now);
+        if (POLL_DIAG) {
+            Serial.printf("[POLL %lu] DONE sensor=%s elapsed=%lu value=%.2f\n",
+                          now, sensorName(currentPollSensor), now - requestTimeout,
+                          (double)pollSensorValueForDiag(currentPollSensor));
+        }
+        if (sensorIntervalMs[currentPollSensor] > 0) {
+            sensorNextDueMs[currentPollSensor] = now + sensorIntervalMs[currentPollSensor];
+            if (POLL_DIAG) {
+                Serial.printf("[POLL %lu] NEXT_SLOW sensor=%s due_in=%lu\n",
+                              now, sensorName(currentPollSensor), sensorIntervalMs[currentPollSensor]);
+            }
+        }
     }
     currentPollSensor = SENSOR_NONE;
     waiting = false;
@@ -181,25 +272,63 @@ inline void completeCurrentSensor(unsigned long now) {
 
 inline void timeoutCurrentSensor(unsigned long now) {
     if (currentPollSensor != SENSOR_NONE && currentPollSensor < SENSOR_COUNT) {
-        // On timeout, retry later but don't block faster sensors.
-        sensorNextDueMs[currentPollSensor] = now + sensorIntervalMs[currentPollSensor];
+        pollDiagMark("TIMEOUT", now);
+        if (POLL_DIAG) {
+            Serial.printf("[POLL %lu] TIMEOUT sensor=%s elapsed=%lu limit=%lu since_last_rx=%lu\n",
+                          now, sensorName(currentPollSensor), now - requestTimeout,
+                          sensorTimeoutMs[currentPollSensor],
+                          pollDiagLastRxMs ? now - pollDiagLastRxMs : 0);
+        }
+        // On timeout, slow sensors wait for their next slow slot. Fast sensors
+        // stay eligible so current/voltage recover immediately.
+        if (sensorIntervalMs[currentPollSensor] > 0) {
+            sensorNextDueMs[currentPollSensor] = now + sensorIntervalMs[currentPollSensor];
+            if (POLL_DIAG) {
+                Serial.printf("[POLL %lu] NEXT_SLOW_AFTER_TIMEOUT sensor=%s due_in=%lu\n",
+                              now, sensorName(currentPollSensor), sensorIntervalMs[currentPollSensor]);
+            }
+        }
     }
     currentPollSensor = SENSOR_NONE;
     waiting = false;
 }
 
 int8_t pickNextDueSensor(unsigned long now) {
-    int8_t best = -1;
-    unsigned long bestOverdue = 0;
-    for (uint8_t s = 0; s < SENSOR_COUNT; s++) {
-        if (now < sensorNextDueMs[s]) continue;
-        unsigned long overdue = now - sensorNextDueMs[s];
-        if (best < 0 || overdue > bestOverdue) {
-            best = s;
-            bestOverdue = overdue;
+    const uint8_t slowCount = sizeof(slowSensors) / sizeof(slowSensors[0]);
+    if (fastPollsSinceSlow >= FAST_POLLS_BETWEEN_SLOW_POLLS) {
+        pollDiagMark("SLOW_SLOT", now);
+        if (POLL_DIAG) {
+            Serial.printf("[POLL %lu] SLOW_SLOT fast_polls=%u\n", now, fastPollsSinceSlow);
+        }
+        for (uint8_t i = 0; i < slowCount; i++) {
+            uint8_t idx = (nextSlowSensorIndex + i) % slowCount;
+            uint8_t sensor = slowSensors[idx];
+            if (now >= sensorNextDueMs[sensor]) {
+                nextSlowSensorIndex = (idx + 1) % slowCount;
+                fastPollsSinceSlow = 0;
+                if (POLL_DIAG) {
+                    Serial.printf("[POLL %lu] PICK_SLOW sensor=%s overdue=%lu\n",
+                                  now, sensorName(sensor), now - sensorNextDueMs[sensor]);
+                }
+                return sensor;
+            }
+        }
+        fastPollsSinceSlow = 0;
+        if (POLL_DIAG) {
+            Serial.printf("[POLL %lu] SLOW_NONE_DUE\n", now);
         }
     }
-    return best;
+
+    const uint8_t fastCount = sizeof(fastSensors) / sizeof(fastSensors[0]);
+    uint8_t sensor = fastSensors[nextFastSensorIndex];
+    nextFastSensorIndex = (nextFastSensorIndex + 1) % fastCount;
+    if (fastPollsSinceSlow < 255) fastPollsSinceSlow++;
+    pollDiagMark("PICK_FAST", now);
+    if (POLL_DIAG) {
+        Serial.printf("[POLL %lu] PICK_FAST sensor=%s fast_polls=%u\n",
+                      now, sensorName(sensor), fastPollsSinceSlow);
+    }
+    return sensor;
 }
 
 static inline uint8_t xor_checksum(const uint8_t* p, size_t n) {
@@ -330,12 +459,44 @@ void loop() {
     unsigned long currentTime = millis();
     processSteeringControlState(currentTime);
     const bool windowBusy = isWindowMotionBusy();
+    static bool lastWindowBusy = false;
+    static unsigned long lastWindowWaitDiagMs = 0;
+    static unsigned long lastWaitingDiagMs = 0;
+
+    if (POLL_DIAG && windowBusy != lastWindowBusy) {
+        Serial.printf("[POLL %lu] WINDOW_BUSY %s waiting=%u sensor=%s\n",
+                      currentTime, windowBusy ? "ON" : "OFF", waiting ? 1 : 0,
+                      sensorName(currentPollSensor));
+        lastWindowBusy = windowBusy;
+    }
+
+    if (POLL_DIAG && windowBusy && waiting && currentTime - lastWindowWaitDiagMs >= 250) {
+        Serial.printf("[POLL %lu] WAIT_PAUSED_BY_WINDOW sensor=%s elapsed=%lu\n",
+                      currentTime, sensorName(currentPollSensor), currentTime - requestTimeout);
+        lastWindowWaitDiagMs = currentTime;
+    }
+
+    if (POLL_DIAG && !windowBusy && waiting && currentTime - lastWaitingDiagMs >= POLL_DIAG_GAP_MS) {
+        pollDiagMark("WAITING", currentTime);
+        Serial.printf("[POLL %lu] WAITING sensor=%s elapsed=%lu limit=%lu since_last_rx=%lu\n",
+                      currentTime, sensorName(currentPollSensor),
+                      currentTime - requestTimeout,
+                      currentPollSensor < SENSOR_COUNT ? sensorTimeoutMs[currentPollSensor] : 0,
+                      pollDiagLastRxMs ? currentTime - pollDiagLastRxMs : 0);
+        lastWaitingDiagMs = currentTime;
+    }
 
     // STEP 1: PID scheduler
     if (!windowBusy && !waiting) {
         int8_t nextSensor = pickNextDueSensor(currentTime);
         if (nextSensor >= 0) {
             currentPollSensor = (uint8_t)nextSensor;
+            if (POLL_DIAG) {
+                pollDiagMark("REQ", currentTime);
+                Serial.printf("[POLL %lu] REQ sensor=%s timeout=%lu\n",
+                              currentTime, sensorName(currentPollSensor),
+                              sensorTimeoutMs[currentPollSensor]);
+            }
             sendSensorRequest(currentPollSensor);
             waiting = true;
             requestTimeout = currentTime;
@@ -343,7 +504,7 @@ void loop() {
     }
 
     // STEP 2: in-flight timeout
-    if (!windowBusy && waiting && currentTime - requestTimeout >= TIMEOUT_MS) {
+    if (!windowBusy && waiting && currentPollSensor < SENSOR_COUNT && currentTime - requestTimeout >= sensorTimeoutMs[currentPollSensor]) {
         timeoutCurrentSensor(currentTime);
     }
 
@@ -493,15 +654,35 @@ void loop() {
                 // }
                 // Serial.println();
 
-                if (waiting) {
-                    const uint8_t* b = can_message.data.byte;
-                    const uint8_t  pciType = b[0] & 0xF0; // 0x00=SF, 0x10=FF, 0x20=CF, 0x30=FC
-                    const uint8_t  seq     = b[0] & 0x0F; // CF sequence (1..15)
+	                if (waiting) {
+	                    const uint8_t* b = can_message.data.byte;
+	                    const uint8_t  pciType = b[0] & 0xF0; // 0x00=SF, 0x10=FF, 0x20=CF, 0x30=FC
+	                    const uint8_t  seq     = b[0] & 0x0F; // CF sequence (1..15)
+
+                        // ISO-TP timing matters: answer first frames with FC before
+                        // any Serial diagnostics can block the loop.
+                        bool sentImmediateFc = false;
+                        if (pciType == 0x10 && can_message.length >= 4) {
+                            const bool needsFc =
+                                (currentPollSensor == SENSOR_HV_CURRENT && b[2] == 0x61 && b[3] == 0x98) ||
+                                (currentPollSensor == SENSOR_HV_VOLTAGE && b[2] == 0x61 && b[3] == 0x74) ||
+                                (currentPollSensor == SENSOR_HV_TEMPS && b[2] == 0x61 && b[3] == 0x87);
+                            if (needsFc) {
+                                sendFlowControl(0x7E2, 0x00, 0x00);
+                                sentImmediateFc = true;
+                            }
+                        }
+
+	                    pollDiagFrame("RX", currentTime, can_message);
+                        if (sentImmediateFc && POLL_DIAG) {
+                            Serial.printf("[POLL %lu] FC_IMMEDIATE sensor=%s target=0x7E2 stmin=0\n",
+                                          currentTime, sensorName(currentPollSensor));
+                        }
 
                     switch (currentPollSensor) {
-                        // ---------------------- Battery Current (21 98) ----------------------
-                        case 0: {
-                            bool decoded = false;
+	                        // ---------------------- Battery Current (21 98) ----------------------
+	                        case 0: {
+	                            bool decoded = false;
 
                             // SF layout (if ever used): b[1]=0x61, b[2]=0x98, A=b[3], B=b[4]
                             // if (pciType == 0x00 /*SF*/ && b[1] == 0x61 && b[2] == 0x98 && can_message.length >= 5) {
@@ -509,37 +690,49 @@ void loop() {
                             //     decoded = true;
                             // }
 
-                            // FF layout (your logs show FF for 61 98): A=b[4], B=b[5]
-                            if (pciType == 0x10 /*FF*/ && b[2] == 0x61 && b[3] == 0x98 && can_message.length >= 6) {
-                                g_sensors[1] = ((b[4] * 256 + b[5]) / 100.0f) - 327.7f;
-                                decoded = true;
-                                // We don't need CFs for current since A/B are in the FF already
-                            }
+	                            // FF layout (your logs show FF for 61 98): A=b[4], B=b[5]
+		                            if (pciType == 0x10 /*FF*/ && b[2] == 0x61 && b[3] == 0x98 && can_message.length >= 6) {
+		                                g_sensors[1] = ((b[4] * 256 + b[5]) / 100.0f) - 327.7f;
+		                                if (POLL_DIAG) {
+		                                    Serial.printf("[POLL %lu] DECODE sensor=%s amps=%.2f\n",
+		                                                  currentTime, sensorName(currentPollSensor),
+		                                                  (double)g_sensors[IDX_HV_CURRENT]);
+		                                }
+		                                // Value is in the FF, but finish the ISO-TP exchange by
+	                                    // waiting for CF#1 before starting another request.
+		                            }
 
-                            if (decoded) {
-                                completeCurrentSensor(currentTime);
+                                if (pciType == 0x20 /*CF*/ && seq == 0x01) {
+                                    decoded = true;
+                                }
+
+	                            if (decoded) {
+	                                completeCurrentSensor(currentTime);
                             }
                             break;
                         }
 
                         // ---------------------- Battery Voltage (21 74) ----------------------
                         case 1: {
-                            if (pciType == 0x10 /*FF*/ && b[2] == 0x61 && b[3] == 0x74) {
-                                // Be loud so we know this ran:
-                                // Serial.println("FF 61 74 seen -> sending FC to 0x7EA and 0x7E2 (BS=0, STmin=5ms)");
-                                // Send FC to responder (0x7EA) AND to request ID (0x7E2), some gateways want one or the other
-                                sendFlowControl(0x7EA, 0x00, 0x05);  // BS=0 (all), STmin=5ms
-                                sendFlowControl(0x7E2, 0x00, 0x05);  // belt & suspenders
-                                // do NOT advance; wait for CF#1 (seq==1), which carries F/G
-                            }
+		                            if (pciType == 0x10 /*FF*/ && b[2] == 0x61 && b[3] == 0x74) {
+		                                // Be loud so we know this ran:
+		                                // Serial.println("FF 61 74 seen -> sending FC to 0x7EA and 0x7E2 (BS=0, STmin=5ms)");
+		                                // Send FC back to the ECU so it sends the consecutive frame.
+		                                // do NOT advance; wait for CF#1 (seq==1), which carries F/G
+	                            }
 
 
                             // CF#1 carries F,G at b[2],b[3] → Voltage=(F*256+G)/2
-                            if (pciType == 0x20 /*CF*/ && seq == 0x01 && can_message.length >= 4) {
-                                uint16_t raw = (uint16_t(b[2]) << 8) | b[3]; // F,G
-                                g_sensors[2] = raw / 2.0f;                    // volts
-                                completeCurrentSensor(currentTime);
-                            }
+	                            if (pciType == 0x20 /*CF*/ && seq == 0x01 && can_message.length >= 4) {
+	                                uint16_t raw = (uint16_t(b[2]) << 8) | b[3]; // F,G
+	                                g_sensors[2] = raw / 2.0f;                    // volts
+                                    if (POLL_DIAG) {
+                                        Serial.printf("[POLL %lu] DECODE sensor=%s volts=%.1f\n",
+                                                      currentTime, sensorName(currentPollSensor),
+                                                      (double)g_sensors[IDX_HV_VOLTAGE]);
+                                    }
+	                                completeCurrentSensor(currentTime);
+	                            }
                             break;
                         }
 
@@ -548,10 +741,15 @@ void loop() {
                             bool decoded = false;
 
                             // Proper Mode 01 SF: b[1]=0x41, b[2]=0x05, A=b[3]
-                            if (pciType == 0x00 /*SF*/ && b[1] == 0x41 && b[2] == 0x05 && can_message.length >= 4) {
-                                g_sensors[3] = b[3] - 40.0f;
-                                decoded = true;
-                            }
+	                            if (pciType == 0x00 /*SF*/ && b[1] == 0x41 && b[2] == 0x05 && can_message.length >= 4) {
+	                                g_sensors[3] = b[3] - 40.0f;
+	                                decoded = true;
+                                    if (POLL_DIAG) {
+                                        Serial.printf("[POLL %lu] DECODE sensor=%s c=%.1f\n",
+                                                      currentTime, sensorName(currentPollSensor),
+                                                      (double)g_sensors[IDX_ECT]);
+                                    }
+	                            }
 
                             if (decoded) {
                                 completeCurrentSensor(currentTime);
@@ -569,27 +767,37 @@ void loop() {
                             };
 
                             // FF: 61 87, payload: A=b[4],B=b[5],C=b[6],D=b[7]
-                            if (pciType == 0x10 && b[2] == 0x61 && b[3] == 0x87) {
-                                // Send Flow Control to responder so we get CF#1 with E..H
-                                sendFlowControl(0x7EA, 0x00, 0x05); // BS=0, STmin=5ms (robust)
-                                sendFlowControl(0x7E2, 0x00, 0x05); // BS=0, STmin=5ms (robust)
+		                            if (pciType == 0x10 && b[2] == 0x61 && b[3] == 0x87) {
+		                                // Send Flow Control to the ECU so we get CF#1 with E..H
 
-                                uint16_t AB = (uint16_t(b[4]) << 8) | b[5]; // Intake
+	                                uint16_t AB = (uint16_t(b[4]) << 8) | b[5]; // Intake
                                 uint16_t CD = (uint16_t(b[6]) << 8) | b[7]; // TB1
-                                g_sensors[IDX_HV_INTAKE_C] = word_to_C(AB);
-                                g_sensors[IDX_HV_TB1_C]    = word_to_C(CD);
-                                // Do not advance yet; finish TB2/TB3 from CF#1
-                            }
+	                                g_sensors[IDX_HV_INTAKE_C] = word_to_C(AB);
+	                                g_sensors[IDX_HV_TB1_C]    = word_to_C(CD);
+                                    if (POLL_DIAG) {
+                                        Serial.printf("[POLL %lu] DECODE_PART sensor=%s intake=%.1f tb1=%.1f\n",
+                                                      currentTime, sensorName(currentPollSensor),
+                                                      (double)g_sensors[IDX_HV_INTAKE_C],
+                                                      (double)g_sensors[IDX_HV_TB1_C]);
+                                    }
+	                                // Do not advance yet; finish TB2/TB3 from CF#1
+	                            }
 
                             // CF#1: seq==1, payload: E=b[1],F=b[2],G=b[3],H=b[4],I=b[5]...
                             if (pciType == 0x20 && seq == 0x01 && can_message.length >= 5) {
                                 uint16_t EF = (uint16_t(b[1]) << 8) | b[2]; // TB2 uses E,F
-                                uint16_t GH = (uint16_t(b[3]) << 8) | b[4]; // TB3 uses G,H
-                                g_sensors[6] = (EF * 255.9f / 65535.0f) - 50.0f; // TB2 °C
-                                g_sensors[7] = (GH * 255.9f / 65535.0f) - 50.0f; // TB3 °C
+	                                uint16_t GH = (uint16_t(b[3]) << 8) | b[4]; // TB3 uses G,H
+	                                g_sensors[6] = (EF * 255.9f / 65535.0f) - 50.0f; // TB2 °C
+	                                g_sensors[7] = (GH * 255.9f / 65535.0f) - 50.0f; // TB3 °C
+                                    if (POLL_DIAG) {
+                                        Serial.printf("[POLL %lu] DECODE sensor=%s tb2=%.1f tb3=%.1f\n",
+                                                      currentTime, sensorName(currentPollSensor),
+                                                      (double)g_sensors[IDX_HV_TB2_C],
+                                                      (double)g_sensors[IDX_HV_TB3_C]);
+                                    }
 
-                                completeCurrentSensor(currentTime);
-                            }
+	                                completeCurrentSensor(currentTime);
+	                            }
 
                             break;
                         }
@@ -600,11 +808,16 @@ void loop() {
                             uint8_t pciType = b[0] & 0xF0; // 0x00 = SF
 
                             // Mode 01 SF reply: b[1]=0x41, b[2]=0x5B, A=b[3]
-                            if (pciType == 0x00 && b[1] == 0x41 && b[2] == 0x5B && can_message.length >= 4) {
-                                float soc = (b[3] * 20.0f) / 51.0f; // percent
-                                g_sensors[8] = soc;                 // pick any free slot; e.g., index 8
-                                decoded = true;
-                            }
+	                            if (pciType == 0x00 && b[1] == 0x41 && b[2] == 0x5B && can_message.length >= 4) {
+	                                float soc = (b[3] * 20.0f) / 51.0f; // percent
+	                                g_sensors[8] = soc;                 // pick any free slot; e.g., index 8
+	                                decoded = true;
+                                    if (POLL_DIAG) {
+                                        Serial.printf("[POLL %lu] DECODE sensor=%s pct=%.1f\n",
+                                                      currentTime, sensorName(currentPollSensor),
+                                                      (double)g_sensors[8]);
+                                    }
+	                            }
                             if (decoded) {
                                 completeCurrentSensor(currentTime);
                             }
@@ -646,23 +859,30 @@ void loop() {
 
                             // (Ignore CFs — we don’t need them for byte B)
 
-                            if (decoded) {
-                                if (mode <= 6) {
-                                    g_sensors[11] = mode;               // pick free slot for BFS
-                                } else {
-                                    g_sensors[11] = 0;                  // clamp/guard if odd value
-                                }
-                                completeCurrentSensor(currentTime);
-                            }
-                            break;
-                        }
+	                            if (decoded) {
+	                                if (mode <= 6) {
+	                                    g_sensors[11] = mode;               // pick free slot for BFS
+	                                } else {
+	                                    g_sensors[11] = 0;                  // clamp/guard if odd value
+	                                }
+                                    if (POLL_DIAG) {
+                                        Serial.printf("[POLL %lu] DECODE sensor=%s mode=%u\n",
+                                                      currentTime, sensorName(currentPollSensor),
+                                                      (unsigned)g_sensors[IDX_BFS]);
+                                    }
+	                                completeCurrentSensor(currentTime);
+	                            }
+	                            break;
+	                        }
 
 
 
                     }
-                }
-                break;
-            }
+	                } else if (POLL_DIAG) {
+                        pollDiagFrame("STRAY_RX_NOT_WAITING", currentTime, can_message);
+                    }
+	                break;
+	            }
 
             default:
                 break;
