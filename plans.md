@@ -1,0 +1,12 @@
+- can adapter
+  - rework polling, have slower / lower priority sensors, and faster sensors.
+  - read mg1 and mg2 rpm
+- dash display
+  - get rid of the 3 battery temps from the screen
+  - move other thing over to the left
+  - make area for mg1 and mg2
+    - horizontal bars, no backdrop, same bar style with text as engine and kw
+- matrix
+  - add more info, maybe just soc as a bar
+  - replace old text with slopcoded animations
+  - maybe add like a thank you message or something, idk how to control it tho
