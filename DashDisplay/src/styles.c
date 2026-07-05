@@ -58,15 +58,15 @@ void remove_style_sharp_square(lv_obj_t *obj) {
 
 void init_style_text_readable_MAIN_DEFAULT(lv_style_t *style) {
     lv_style_set_text_color(style, lv_color_hex(0xffffffff));
-    lv_style_set_pad_right(style, 5);
+    lv_style_set_pad_right(style, 4);
     lv_style_set_shadow_color(style, lv_color_hex(0xff000000));
     lv_style_set_shadow_spread(style, 4);
     lv_style_set_shadow_opa(style, 255);
-    lv_style_set_pad_left(style, 5);
+    lv_style_set_pad_left(style, 4);
     lv_style_set_text_align(style, LV_TEXT_ALIGN_CENTER);
     lv_style_set_bg_color(style, lv_color_hex(0xff000000));
-    lv_style_set_bg_opa(style, 100);
     lv_style_set_radius(style, 15);
+    lv_style_set_bg_opa(style, 80);
 };
 
 lv_style_t *get_style_text_readable_MAIN_DEFAULT() {

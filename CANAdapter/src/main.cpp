@@ -1,4 +1,5 @@
 #include <Arduino.h>
+#include <driver/twai.h>
 #include <esp32_can.h> /* https://github.com/collin80/esp32_can */
 #include <WiFi.h>
 #include <esp_now.h>
@@ -36,31 +37,26 @@ inline uint16_t Process_Endian(uint8_t byte_msb, uint8_t byte_lsb) {
   return (byte_msb << 8) | byte_lsb;
 }
 
+static volatile uint32_t canTxFailCount = 0;
+static volatile esp_err_t canTxLastError = ESP_OK;
+
 void sendCANFrame(uint32_t canID, const uint8_t* data, uint8_t dataLength, bool extended, bool rtr) {
-    // Use a local frame so back-to-back sends don't overwrite a shared TX buffer.
-    CAN_FRAME txFrame = {};
-    txFrame.id = canID;
-    txFrame.length = dataLength;
-    txFrame.extended = extended;
-    txFrame.rtr = rtr;
+    twai_message_t txFrame = {};
+    txFrame.identifier = canID;
+    txFrame.data_length_code = (dataLength > 8) ? 8 : dataLength;
+    txFrame.extd = extended ? 1 : 0;
+    txFrame.rtr = rtr ? 1 : 0;
 
-    // Use memcpy for faster bulk copy when dataLength > 4
     uint8_t copyLength = (dataLength > 8) ? 8 : dataLength;
-    if (dataLength >= 4) {
-        memcpy(txFrame.data.byte, data, copyLength);
-    } else {
-        // Manual copy for small arrays (often faster than memcpy overhead)
-        for (int i = 0; i < copyLength; i++) {
-            txFrame.data.byte[i] = data[i];
-        }
+    if (copyLength > 0) {
+        memcpy(txFrame.data, data, copyLength);
     }
 
-    // Clear remaining bytes if needed
-    if (dataLength < 8) {
-        memset(txFrame.data.byte + dataLength, 0, 8 - dataLength);
+    esp_err_t result = twai_transmit(&txFrame, pdMS_TO_TICKS(4));
+    if (result != ESP_OK) {
+        canTxFailCount++;
+        canTxLastError = result;
     }
-
-    CAN0.sendFrame(txFrame);
 }
 
 // helper: Flow Control (CTS)
@@ -118,6 +114,18 @@ void sendSensorRequest(uint8_t sensorNum) {
             sendCANFrame(0x7E2, req, 8);
             break;
         }
+        case 6: {
+            // Torque CSV: MG1 temperature/revolution, ModeAndPID 2161, Header 7E2
+            uint8_t req[] = {0x02, 0x21, 0x61, 0x00, 0x00, 0x00, 0x00, 0x00};
+            sendCANFrame(0x7E2, req, 8);
+            break;
+        }
+        case 7: {
+            // Torque CSV: MG2 temperature/revolution, ModeAndPID 2162, Header 7E2
+            uint8_t req[] = {0x02, 0x21, 0x62, 0x00, 0x00, 0x00, 0x00, 0x00};
+            sendCANFrame(0x7E2, req, 8);
+            break;
+        }
     }
 }
 
@@ -125,7 +133,7 @@ void sendSensorRequest(uint8_t sensorNum) {
 uint8_t fanOverrideEnable = 0;
 
 // Sensor polling stuff
-volatile float g_sensors[20] = {0}; // All sensor values
+volatile float g_sensors[24] = {0}; // All sensor values
 enum : uint8_t {
   SENSOR_HV_CURRENT = 0,
   SENSOR_HV_VOLTAGE = 1,
@@ -133,7 +141,9 @@ enum : uint8_t {
   SENSOR_HV_TEMPS = 3,
   SENSOR_SOC = 4,
   SENSOR_HV_FAN_MODE = 5,
-  SENSOR_COUNT = 6,
+  SENSOR_MG1 = 6,
+  SENSOR_MG2 = 7,
+  SENSOR_COUNT = 8,
   SENSOR_NONE = 0xFF
 };
 bool waiting = false;               // Are we waiting for a response?
@@ -149,7 +159,9 @@ const uint8_t slowSensors[] = {
   SENSOR_ECT,
   SENSOR_HV_TEMPS,
   SENSOR_SOC,
-  SENSOR_HV_FAN_MODE
+  SENSOR_HV_FAN_MODE,
+  SENSOR_MG1,
+  SENSOR_MG2
 };
 
 const uint8_t FAST_POLLS_BETWEEN_SLOW_POLLS = 8;
@@ -158,10 +170,12 @@ const uint8_t FAST_POLLS_BETWEEN_SLOW_POLLS = 8;
 const unsigned long sensorIntervalMs[SENSOR_COUNT] = {
   0,    // HV current: fast loop
   0,    // HV voltage: fast loop
-  2000, // Coolant temp
-  5000, // HV temps (multi-frame)
-  2000, // SOC
-  5000  // Fan mode
+  1000, // Coolant temp
+  1000, // HV temps (multi-frame)
+  1000, // SOC
+  1000, // Fan mode
+  1000, // MG1 temp/RPM
+  1000  // MG2 temp/RPM
 };
 
 const unsigned long sensorTimeoutMs[SENSOR_COUNT] = {
@@ -170,7 +184,9 @@ const unsigned long sensorTimeoutMs[SENSOR_COUNT] = {
   80,  // Coolant temp
   300, // HV temps (multi-frame)
   80,  // SOC
-  120  // Fan mode
+  120, // Fan mode
+  120, // MG1 temp/RPM
+  120  // MG2 temp/RPM
 };
 unsigned long sensorNextDueMs[SENSOR_COUNT] = {0};
 uint8_t nextFastSensorIndex = 0;
@@ -190,6 +206,8 @@ const char* sensorName(uint8_t sensor) {
         case SENSOR_HV_TEMPS: return "hv_temps";
         case SENSOR_SOC: return "soc";
         case SENSOR_HV_FAN_MODE: return "fan_mode";
+        case SENSOR_MG1: return "mg1";
+        case SENSOR_MG2: return "mg2";
         default: return "unknown";
     }
 }
@@ -235,7 +253,11 @@ enum {
   IDX_DISPLAY_OFF = 14,
   IDX_MODE_EV = 15,
   IDX_MODE_ECO = 16,
-  IDX_MODE_PWR = 17
+  IDX_MODE_PWR = 17,
+  IDX_MG1_TEMP_F = 18,
+  IDX_MG1_RPM = 19,
+  IDX_MG2_TEMP_F = 20,
+  IDX_MG2_RPM = 21
 };
 
 float pollSensorValueForDiag(uint8_t sensor) {
@@ -246,6 +268,8 @@ float pollSensorValueForDiag(uint8_t sensor) {
         case SENSOR_HV_TEMPS: return g_sensors[IDX_HV_TB1_C];
         case SENSOR_SOC: return g_sensors[8];
         case SENSOR_HV_FAN_MODE: return g_sensors[IDX_BFS];
+        case SENSOR_MG1: return g_sensors[IDX_MG1_RPM];
+        case SENSOR_MG2: return g_sensors[IDX_MG2_RPM];
         default: return 0.0f;
     }
 }
@@ -350,8 +374,16 @@ struct PayloadF {
   float   tb2_C;
   float   tb3_C;
   float   soc_pct;
+  float   mg1_temp_F;
+  float   mg1_rpm;
+  float   mg2_temp_F;
+  float   mg2_rpm;
   int8_t  ebar;         // already small int
   uint8_t est;          // state_energy_drain
+  uint8_t bfs;          // battery fan speed
+  uint8_t bfor;         // battery fan override
+  uint8_t dim;          // car dim signal
+  uint8_t off;          // display off flag
 };
 #pragma pack(pop)
 
@@ -364,11 +396,11 @@ void initDisplayUart() {
 static inline void wr_f32(uint8_t *dst, float v) { memcpy(dst, &v, 4); }
 
 void sendSensorsFloat() {
-    const uint8_t n = 43;                 // payload length (bytes)
+    const uint8_t n = sizeof(PayloadF);   // payload length (bytes)
     const int need = 1 + 1 + n + 1;       // [0xAA][len][payload][csum]
     if (DISP.availableForWrite() < need) return;
 
-    uint8_t buf[1 + 1 + 43 + 1];          // <-- or: uint8_t buf[1 + 1 + n + 1];
+    uint8_t buf[1 + 1 + sizeof(PayloadF) + 1];
     size_t o = 0;
 
     buf[o++] = 0xAA;
@@ -385,6 +417,10 @@ void sendSensorsFloat() {
     wr_f32(&buf[o], g_sensors[IDX_HV_TB2_C]);    o += 4;
     wr_f32(&buf[o], g_sensors[IDX_HV_TB3_C]);    o += 4;
     wr_f32(&buf[o], g_sensors[8]);               o += 4;  // soc_pct
+    wr_f32(&buf[o], g_sensors[IDX_MG1_TEMP_F]);  o += 4;
+    wr_f32(&buf[o], g_sensors[IDX_MG1_RPM]);     o += 4;
+    wr_f32(&buf[o], g_sensors[IDX_MG2_TEMP_F]);  o += 4;
+    wr_f32(&buf[o], g_sensors[IDX_MG2_RPM]);     o += 4;
 
     buf[o++] = (int8_t)g_sensors[9];             // ebar
     buf[o++] = (uint8_t)g_sensors[10];           // est
@@ -503,12 +539,7 @@ void loop() {
         }
     }
 
-    // STEP 2: in-flight timeout
-    if (!windowBusy && waiting && currentPollSensor < SENSOR_COUNT && currentTime - requestTimeout >= sensorTimeoutMs[currentPollSensor]) {
-        timeoutCurrentSensor(currentTime);
-    }
-
-    // STEP 3: Process CAN messages
+    // STEP 2: Process CAN messages before timeout checks so queued replies win.
     while (CAN0.read(can_message)) {
 
         // force battery fan on
@@ -663,10 +694,10 @@ void loop() {
                         // any Serial diagnostics can block the loop.
                         bool sentImmediateFc = false;
                         if (pciType == 0x10 && can_message.length >= 4) {
-                            const bool needsFc =
-                                (currentPollSensor == SENSOR_HV_CURRENT && b[2] == 0x61 && b[3] == 0x98) ||
-                                (currentPollSensor == SENSOR_HV_VOLTAGE && b[2] == 0x61 && b[3] == 0x74) ||
-                                (currentPollSensor == SENSOR_HV_TEMPS && b[2] == 0x61 && b[3] == 0x87);
+	                            const bool needsFc =
+	                                (currentPollSensor == SENSOR_HV_CURRENT && b[2] == 0x61 && b[3] == 0x98) ||
+	                                (currentPollSensor == SENSOR_HV_VOLTAGE && b[2] == 0x61 && b[3] == 0x74) ||
+	                                (currentPollSensor == SENSOR_HV_TEMPS && b[2] == 0x61 && b[3] == 0x87);
                             if (needsFc) {
                                 sendFlowControl(0x7E2, 0x00, 0x00);
                                 sentImmediateFc = true;
@@ -825,7 +856,7 @@ void loop() {
                         }
                         
                         // ---------------------- HV battery fan mode (21 9B) ----------------------
-                        case 5: {
+	                        case 5: {
                             bool decoded = false;
                             uint8_t mode = 0xFF;  // invalid placeholder
 
@@ -875,6 +906,48 @@ void loop() {
 	                            break;
 	                        }
 
+                            // ---------------------- MG1 temperature + RPM (21 61) ----------------------
+                            case SENSOR_MG1: {
+                                bool decoded = false;
+
+                                // Torque CSV rows:
+                                // MG1 temperature = A * 9 / 5 - 40
+                                // MG1 revolution = D * 256 + E - 32768
+                                // 21 61 replies fit in one ISO-TP single frame:
+                                // [07][61][61][A][B][C][D][E]
+                                if (pciType == 0x00 && b[1] == 0x61 && b[2] == 0x61 && can_message.length >= 8) {
+                                    g_sensors[IDX_MG1_TEMP_F] = b[3] * 9.0f / 5.0f - 40.0f;
+                                    g_sensors[IDX_MG1_RPM] = (float)(((uint16_t)b[6] << 8) | b[7]) - 32768.0f;
+                                    decoded = true;
+                                }
+
+                                if (decoded) {
+                                    completeCurrentSensor(currentTime);
+                                }
+                                break;
+                            }
+
+                            // ---------------------- MG2 temperature + RPM (21 62) ----------------------
+                            case SENSOR_MG2: {
+                                bool decoded = false;
+
+                                // Torque CSV rows:
+                                // MG2 temperature = A * 9 / 5 - 40
+                                // MG2 revolution = D * 256 + E - 32768
+                                // 21 62 replies fit in one ISO-TP single frame:
+                                // [07][61][62][A][B][C][D][E]
+                                if (pciType == 0x00 && b[1] == 0x61 && b[2] == 0x62 && can_message.length >= 8) {
+                                    g_sensors[IDX_MG2_TEMP_F] = b[3] * 9.0f / 5.0f - 40.0f;
+                                    g_sensors[IDX_MG2_RPM] = (float)(((uint16_t)b[6] << 8) | b[7]) - 32768.0f;
+                                    decoded = true;
+                                }
+
+                                if (decoded) {
+                                    completeCurrentSensor(currentTime);
+                                }
+                                break;
+                            }
+
 
 
                     }
@@ -888,6 +961,13 @@ void loop() {
                 break;
         }
     } // end CAN read drain loop
+
+    currentTime = millis();
+
+    // STEP 3: in-flight timeout
+    if (!windowBusy && waiting && currentPollSensor < SENSOR_COUNT && currentTime - requestTimeout >= sensorTimeoutMs[currentPollSensor]) {
+        timeoutCurrentSensor(currentTime);
+    }
 
     // fan override every 2 seconds if enabled
     static unsigned long lastFanOverrideTime = 0;

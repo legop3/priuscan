@@ -72,6 +72,10 @@ struct PayloadF {
   float   tb2_C;
   float   tb3_C;
   float   soc_pct;
+  float   mg1_temp_F;
+  float   mg1_rpm;
+  float   mg2_temp_F;
+  float   mg2_rpm;
   int8_t  ebar;
   uint8_t est;
   uint8_t bfs;
@@ -99,9 +103,14 @@ static volatile bool havePacket = false;
 static PayloadF lastPacket{};
 static uint8_t  lastSeq = 0;
 static unsigned long lastRxMs = 0;
+static const uint16_t LINK_RX_BUFFER_SIZE = 2048;
+static const uint16_t UART_BYTES_PER_LOOP = 512;
+static const unsigned long DATA_STALE_MS = 1500;
 
 static void pollUart() {
-  while (LINK.available()) {
+  uint16_t bytesRead = 0;
+  while (LINK.available() && bytesRead < UART_BYTES_PER_LOOP) {
+    bytesRead++;
     uint8_t b = (uint8_t)LINK.read();
     switch (rxState) {
       case RxState::WAIT_START:
@@ -426,6 +435,7 @@ void backlightInit() {
 void setup() {
   Serial.begin(115200);
 
+  LINK.setRxBufferSize(LINK_RX_BUFFER_SIZE);
   LINK.begin(LINK_BAUD, SERIAL_8N1, LINK_RX, LINK_TX);
   Serial.printf("UART link on Serial2 @ %lu, RX=%d TX=%d\n",
                 (unsigned long)LINK_BAUD, LINK_RX, LINK_TX);
@@ -482,10 +492,24 @@ lv_color_t g_yellow = lv_color_hex(0xE9E800);
 // static bool     prev_data_state = false;
 
 static int      prev_rpm = INT_MIN;
+static int      prev_rpm_bar = INT_MIN;
 static int      prev_watts = INT_MIN;
+static int      prev_watts_bar = INT_MIN;
 static int      prev_kw_start = INT_MIN;
 static int      prev_kw_value = INT_MIN;
 static uint8_t  prev_kw_sign = 255;
+
+static int      prev_mg1_rpm = INT_MIN;
+static int      prev_mg1_start = INT_MIN;
+static int      prev_mg1_value = INT_MIN;
+static uint8_t  prev_mg1_sign = 255;
+static int      prev_mg1_temp = INT_MIN;
+
+static int      prev_mg2_rpm = INT_MIN;
+static int      prev_mg2_start = INT_MIN;
+static int      prev_mg2_value = INT_MIN;
+static uint8_t  prev_mg2_sign = 255;
+static int      prev_mg2_temp = INT_MIN;
 
 static int      prev_soc_centi = INT_MIN;
 static uint8_t  prev_soc_band = 255;
@@ -499,10 +523,6 @@ static uint8_t  prev_intake_band = 255;
 static int      prev_bfs = INT_MIN;
 static uint8_t  prev_bfor = 255;
 
-static int      prev_bt1c = INT_MIN;       // centi-F (x100)
-static int      prev_bt2c = INT_MIN;
-static int      prev_bt3c = INT_MIN;
-
 static int      prev_batt_v_centi = INT_MIN;
 static int      prev_batt_a_centi = INT_MIN;
 
@@ -515,7 +535,36 @@ static int      prev_ectF = INT_MIN;
 
 static uint8_t      prev_off = INT_MIN;
 
+static const int KW_BAR_MAX_W = 20000;
+static const int MG_BAR_MAX_RPM = 10000;
+
+static void update_signed_range_bar(lv_obj_t* bar, int value, int max_abs_value,
+                                    int& prev_start, int& prev_value, uint8_t& prev_sign) {
+  value = constrain(value, -max_abs_value, max_abs_value);
+  const int magnitude = abs(value);
+  const uint8_t sign = (value >= 0) ? 1 : 0;
+
+  if (changed(prev_sign, sign)) {
+    lv_color_t c = sign ? g_green : g_blue;
+    lv_obj_set_style_bg_color(bar, c, LV_PART_INDICATOR);
+    lv_obj_set_style_opa(bar, LV_OPA_COVER, LV_PART_INDICATOR);
+  }
+
+  if (sign) {
+    const int start = -max_abs_value;
+    const int bar_value = -max_abs_value + (magnitude * 2);
+    if (changed(prev_start, start)) lv_bar_set_start_value(bar, start, LV_ANIM_OFF);
+    if (changed(prev_value, bar_value)) lv_bar_set_value(bar, bar_value, LV_ANIM_OFF);
+  } else {
+    const int start = max_abs_value - (magnitude * 2);
+    const int bar_value = max_abs_value;
+    if (changed(prev_start, start)) lv_bar_set_start_value(bar, start, LV_ANIM_OFF);
+    if (changed(prev_value, bar_value)) lv_bar_set_value(bar, bar_value, LV_ANIM_OFF);
+  }
+}
+
 void loop() {
+  pollUart();
   lv_timer_handler();
   pollUart();
 
@@ -525,48 +574,51 @@ void loop() {
   if (now - lastUi >= 50) {
     lastUi = now;
 
-    bool fresh = (now - lastRxMs) < 500;
+    bool fresh = (now - lastRxMs) < DATA_STALE_MS;
     if (fresh) {
       lv_obj_add_flag(objects.no_data_label, LV_OBJ_FLAG_HIDDEN);
 
       // ===== RPM =====
       int rpm_val = (int)lrintf(lastPacket.rpm);
-      rpm_val = constrain(rpm_val, 0, 100000);
+      int rpm_bar_val = constrain(rpm_val, 0, 5500);
+      if (changed(prev_rpm_bar, rpm_bar_val)) {
+        lv_bar_set_value(objects.rpm_bar, rpm_bar_val, LV_ANIM_OFF);
+      }
       if (changed(prev_rpm, rpm_val)) {
-        lv_bar_set_value(objects.rpm_bar, rpm_val, LV_ANIM_OFF);
         lv_label_set_text_fmt(objects.rpm_label, "%d\nRPM", rpm_val);
       }
 
       // ===== Watts bar & label =====
       int watts = (int)lrintf(lastPacket.hv_voltage_V * lastPacket.hv_current_A);
-      uint8_t sign = (watts >= 0) ? 1 : 0;
-
-      if (changed(prev_kw_sign, sign)) {
-        if (sign) {
-          lv_obj_set_style_bg_color(objects.kw_watts_bar, g_green, LV_PART_INDICATOR);
-          lv_obj_set_style_opa(objects.kw_watts_bar, LV_OPA_COVER, LV_PART_INDICATOR);
-        } else {
-          lv_obj_set_style_bg_color(objects.kw_watts_bar, g_blue, LV_PART_INDICATOR);
-          lv_obj_set_style_opa(objects.kw_watts_bar, LV_OPA_COVER, LV_PART_INDICATOR);
-        }
+      int watts_bar = constrain(watts, -KW_BAR_MAX_W, KW_BAR_MAX_W);
+      if (changed(prev_watts_bar, watts_bar)) {
+        update_signed_range_bar(objects.kw_watts_bar, watts_bar, KW_BAR_MAX_W, prev_kw_start, prev_kw_value, prev_kw_sign);
       }
-
       if (changed(prev_watts, watts)) {
-        if (sign) {
-          int start = -20000;
-          int val   = watts - 20000;
-          if (changed(prev_kw_start, start)) lv_bar_set_start_value(objects.kw_watts_bar, start, LV_ANIM_OFF);
-          if (changed(prev_kw_value, val))   lv_bar_set_value(objects.kw_watts_bar, val, LV_ANIM_OFF);
-        } else {
-          int start = watts + 20000;
-          int val   = 20000;
-          if (changed(prev_kw_start, start)) lv_bar_set_start_value(objects.kw_watts_bar, start, LV_ANIM_OFF);
-          if (changed(prev_kw_value, val))   lv_bar_set_value(objects.kw_watts_bar, val, LV_ANIM_OFF);
-        }
-
-        // kW label (centi-kW = W/10)
         int kw_centi = (int)lrintf(watts / 10.0f);
         label_set_centi(objects.kw_label, kw_centi, "\nkW");
+      }
+
+      // ===== MG1 / MG2 RPM bars and labels =====
+      int mg1_rpm = (int)lrintf(lastPacket.mg1_rpm);
+      int mg2_rpm = (int)lrintf(lastPacket.mg2_rpm);
+      update_signed_range_bar(objects.mg1_bar, mg1_rpm, MG_BAR_MAX_RPM, prev_mg1_start, prev_mg1_value, prev_mg1_sign);
+      update_signed_range_bar(objects.mg2_bar, mg2_rpm, MG_BAR_MAX_RPM, prev_mg2_start, prev_mg2_value, prev_mg2_sign);
+
+      if (changed(prev_mg1_rpm, mg1_rpm)) {
+        lv_label_set_text_fmt(objects.mg1_rpm, "%d", mg1_rpm);
+      }
+      if (changed(prev_mg2_rpm, mg2_rpm)) {
+        lv_label_set_text_fmt(objects.mg2_rpm, "%d", mg2_rpm);
+      }
+
+      int mg1_temp = (int)lrintf(lastPacket.mg1_temp_F);
+      int mg2_temp = (int)lrintf(lastPacket.mg2_temp_F);
+      if (changed(prev_mg1_temp, mg1_temp)) {
+        lv_label_set_text_fmt(objects.mg1_temp, "%d°", mg1_temp);
+      }
+      if (changed(prev_mg2_temp, mg2_temp)) {
+        lv_label_set_text_fmt(objects.mg2_temp, "%d°", mg2_temp);
       }
 
       // ===== Battery SoC panel =====
@@ -641,14 +693,6 @@ void loop() {
       if (changed(prev_ectF, ectF_round)) {
         lv_label_set_text_fmt(objects.coolant_temp, "Coolant: %d°", ectF_round);
       }
-
-      // ===== Three battery temps (two decimals, no %f) =====
-      int bt1c = (int)lrintf(c_to_f(lastPacket.tb1_C) * 100.0f);
-      int bt2c = (int)lrintf(c_to_f(lastPacket.tb2_C) * 100.0f);
-      int bt3c = (int)lrintf(c_to_f(lastPacket.tb3_C) * 100.0f);
-      if (changed(prev_bt1c, bt1c)) label_set_centi(objects.bt1, bt1c, "°");
-      if (changed(prev_bt2c, bt2c)) label_set_centi(objects.bt2, bt2c, "°");
-      if (changed(prev_bt3c, bt3c)) label_set_centi(objects.bt3, bt3c, "°");
 
       // ===== Battery V/A labels (two decimals, no %f) =====
       int battery_voltage_centi = (int)lrintf(lastPacket.hv_voltage_V * 100.0f);

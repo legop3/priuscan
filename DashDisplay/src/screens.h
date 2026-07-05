@@ -21,10 +21,6 @@ typedef struct _objects_t {
     lv_obj_t *battery_fan_speed;
     lv_obj_t *battery_fan_control;
     lv_obj_t *fan_control_label;
-    lv_obj_t *battery_temps;
-    lv_obj_t *bt1;
-    lv_obj_t *bt2;
-    lv_obj_t *bt3;
     lv_obj_t *battery_stats;
     lv_obj_t *battery_voltage;
     lv_obj_t *battery_amperage;
@@ -33,6 +29,12 @@ typedef struct _objects_t {
     lv_obj_t *ebar_label;
     lv_obj_t *coolant_temp;
     lv_obj_t *no_data_label;
+    lv_obj_t *mg1_bar;
+    lv_obj_t *mg1_temp;
+    lv_obj_t *mg1_rpm;
+    lv_obj_t *mg2_bar;
+    lv_obj_t *mg2_temp;
+    lv_obj_t *mg2_rpm;
 } objects_t;
 
 extern objects_t objects;

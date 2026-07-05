@@ -1,7 +1,6 @@
 {
   "navigation": {
     "selectedUserPageObject": "[DashDisplayEEZ.eez-project]:/userPages/0",
-    "selectedUserWidgetObject": "[DashDisplayEEZ.eez-project]:/userWidgets/-1",
     "selectedStyleObject": "[DashDisplayEEZ.eez-project]:/lvglStyles/styles/1",
     "subnavigationSelectedItems": {}
   },
@@ -216,8 +215,7 @@
                   },
                   "icon": "svg:page"
                 }
-              ],
-              "active": true
+              ]
             },
             {
               "type": "row",
@@ -237,7 +235,8 @@
                       "enableClose": false,
                       "icon": "svg:properties"
                     }
-                  ]
+                  ],
+                  "active": true
                 },
                 {
                   "type": "tabset",
@@ -998,7 +997,9 @@
     "[DashDisplayEEZ.eez-project]:/userPages/0[flow-state]": {
       "selection": {
         "0": {
-          "2": {}
+          "7": {
+            "$selected": true
+          }
         }
       },
       "transform": {
