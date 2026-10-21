@@ -31,25 +31,57 @@ Adafruit_NeoMatrix matrix(
 
 // display functions ---------------------------------------------------------------------------------------
 
-void showEv(bool m = false) {
-  // matrix.fillScreen(0);
-  matrix.fillRect(0, 1, W, H-1, 0); // clear everything except top rainbow line
-
-  matrix.drawXBitmap(0, 0, EV_bits, EV_width, EV_height, matrix.Color(0, 255, 0));
-
-  if (m) {
-    matrix.drawXBitmap(0, 0, M_bits, M_width, M_height, matrix.Color(0, 100, 255));
-  }
-
-  matrix.show();
+static inline uint32_t RGB(uint8_t r, uint8_t g, uint8_t b) {
+  return matrix.Color(r, g, b);
 }
 
-void showGas() {
-  // matrix.fillScreen(0);
-  matrix.fillRect(0, 1, W, H-1, 0); // clear everything except top rainbow line
+uint32_t ebarColorForSpot(uint8_t spot) {
+  if (spot < W * 3 / 8) return RGB(0, 255, 0);
+  if (spot < W * 5 / 8) return RGB(180, 180, 0);
+  if (spot < W * 7 / 8) return RGB(255, 80, 0);
+  return RGB(255, 0, 0);
+}
 
-  matrix.drawXBitmap(0, 0, GAS_bits, GAS_width, GAS_height, matrix.Color(255, 162, 0));
+void drawEbarRow(int8_t ebar_step, bool engine_on) {
+  matrix.drawLine(0, 0, W - 1, 0, 0);
 
+  if (engine_on || ebar_step == 0) {
+    return;
+  }
+
+  int lit = ebar_step;
+  if (lit < 0) {
+    lit = -lit;
+    if (lit > W) lit = W;
+    for (int k = 0; k < lit; k++) {
+      matrix.drawPixel(W - 1 - k, 0, RGB(0, 80, 255));
+    }
+    return;
+  }
+
+  if (lit > W) lit = W;
+
+  for (int k = 0; k < lit; k++) {
+    matrix.drawPixel(k, 0, ebarColorForSpot(k));
+  }
+}
+
+void renderIndicator(uint8_t flags, int8_t ebar_step) {
+  bool engine_on   = flags & (1 << 0);
+  bool ev_mode     = flags & (1 << 2);
+
+  matrix.fillScreen(0);
+  drawEbarRow(ebar_step, engine_on);
+
+  if (engine_on) {
+    matrix.drawXBitmap(0, 0, GAS_bits, GAS_width, GAS_height, RGB(255, 162, 0));
+    matrix.drawLine(0, 0, W - 1, 0, 0);
+  } else {
+    matrix.drawXBitmap(0, 0, EV_bits, EV_width, EV_height, RGB(0, 255, 0));
+    if (ev_mode) {
+      matrix.drawXBitmap(0, 0, M_bits, M_width, M_height, RGB(0, 100, 255));
+    }
+  }
   matrix.show();
 }
 
@@ -57,13 +89,17 @@ void showGas() {
 // data receiver setup ---------------------------------------------------------------------------------------
 #define PACKET_TIMEOUT_MS 4000
 volatile uint8_t last_flags = 0;
+volatile int8_t last_ebar_step = 0;
 volatile unsigned long last_rx = 0;
+volatile bool needs_render = false;
 
 
 void onDataRecv(const uint8_t*, const uint8_t* data, int len) {
   if (len < 1) return;
   last_flags = data[0];
+  last_ebar_step = (len >= 2) ? (int8_t)data[1] : 0;
   last_rx = millis();
+  needs_render = true;
 
   // Decode bits and print immediately on packet
   bool engine_on          = last_flags & (1 << 0);
@@ -71,20 +107,8 @@ void onDataRecv(const uint8_t*, const uint8_t* data, int len) {
   bool ev_mode            = last_flags & (1 << 2);
   bool display_off        = last_flags & (1 << 3);
 
-  Serial.printf("RX flags: eng=%d, dim=%d, evm=%d, disp_off=%d\n",
-                engine_on, car_dim, ev_mode, display_off);
-
-  if (intro) {
-    return;
-  }
-
-  if (engine_on == 1) {
-    showGas();
-  } else if (ev_mode == 1) {
-    showEv(true);
-  } else {
-    showEv(false);
-  }
+  Serial.printf("RX flags: eng=%d, dim=%d, evm=%d, disp_off=%d, ebar=%d\n",
+                engine_on, car_dim, ev_mode, display_off, last_ebar_step);
 
   if (display_off == 1) {
     matrix.setBrightness(0);
@@ -166,6 +190,13 @@ void setup() {
 
 
 void loop() {
+  if (!intro && needs_render) {
+    uint8_t flags = last_flags;
+    int8_t ebar_step = last_ebar_step;
+    needs_render = false;
+    renderIndicator(flags, ebar_step);
+  }
+
   // show ev without m
   // showEv();
   // delay(3000);

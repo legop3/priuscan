@@ -1,23 +1,15 @@
 #include <Arduino.h>
 #include <driver/twai.h>
 #include <esp32_can.h> /* https://github.com/collin80/esp32_can */
-#include <WiFi.h>
-#include <esp_now.h>
 
 #include "can_tx.h"
+#include "matrix_indicator.h"
 #include "steering_controls.h"
 
 // ploo woo goo woo
 
 
 #define SHIELD_LED_PIN 26
-
-// MAC address of the indicator ESP
-uint8_t PEER_MAC[] = {0x34, 0x98, 0x7A, 0x5D, 0xDE, 0xF8};
-// globals for esp-now stuff
-uint8_t last_flags = 0xFF;
-unsigned long last_send = 0;
-
 
 // ====== SIMPLE UART: FLOATS, NO SCALING ======
 #include <HardwareSerial.h>
@@ -473,15 +465,7 @@ void setup() {
 
     initDisplayUart();
 
-    // new esp-now stuff
-    WiFi.mode(WIFI_STA);
-    esp_now_init();
-    esp_now_peer_info_t peer = {};
-    memcpy(peer.peer_addr, PEER_MAC, 6);
-    peer.channel = 0; // use current channel
-    peer.encrypt = false;
-    esp_now_add_peer(&peer);
-    Serial.println(" ESP-NOW.............INIT");
+    initMatrixIndicator();
 
     const unsigned long now = millis();
     for (uint8_t s = 0; s < SENSOR_COUNT; s++) {
@@ -493,8 +477,7 @@ void setup() {
 void loop() {
     CAN_FRAME can_message;
     unsigned long currentTime = millis();
-    processSteeringControlState(currentTime);
-    const bool windowBusy = isWindowMotionBusy();
+    bool windowBusy = isWindowMotionBusy();
     static bool lastWindowBusy = false;
     static unsigned long lastWindowWaitDiagMs = 0;
     static unsigned long lastWaitingDiagMs = 0;
@@ -662,7 +645,7 @@ void loop() {
             case 0x58E: {
                 // Steering button code is in D6.
                 uint8_t code = can_message.data.byte[5];
-                handleSteeringButton(code, currentTime);
+                handleSteeringButton(code, millis());
                 break;
             }
 
@@ -963,6 +946,9 @@ void loop() {
     } // end CAN read drain loop
 
     currentTime = millis();
+    // Read button releases before scheduling any further window movement.
+    processSteeringControlState(currentTime);
+    windowBusy = isWindowMotionBusy();
 
     // STEP 3: in-flight timeout
     if (!windowBusy && waiting && currentPollSensor < SENSOR_COUNT && currentTime - requestTimeout >= sensorTimeoutMs[currentPollSensor]) {
@@ -1014,27 +1000,14 @@ void loop() {
         lastPrintTime = currentTime;
     }
 
-    // STEP 5: ESP-NOW send
-    uint8_t engine_on = (g_sensors[IDX_RPM] > 500.0f) ? 1 : 0;
-    uint8_t car_dim = (uint8_t)g_sensors[IDX_CAR_DIM] ? 1 : 0;
-    uint8_t ev_mode = int(g_sensors[IDX_MODE_EV]); // placeholder for future use
-    uint8_t display_off = int(g_sensors[IDX_DISPLAY_OFF]); 
-
-    uint8_t flags =
-        (engine_on << 0) |
-        (car_dim << 1) |
-        (ev_mode << 2) |
-        (display_off << 3);
-    
-    unsigned long now = millis();
-    if (flags != last_flags || (now - last_send) >= 500) {
-        esp_now_send(PEER_MAC, &flags, 1);
-        last_flags = flags;
-        last_send = now;
-
-        // Serial.print("ESP-NOW send: ");
-        // Serial.println(flags, BIN);
-    }
+    // STEP 5: ESP-NOW matrix indicator
+    updateMatrixIndicator(
+        g_sensors[IDX_RPM],
+        (int8_t)g_sensors[9],
+        (uint8_t)g_sensors[IDX_CAR_DIM] != 0,
+        (uint8_t)g_sensors[IDX_MODE_EV] != 0,
+        (uint8_t)g_sensors[IDX_DISPLAY_OFF] != 0
+    );
 
 
 
