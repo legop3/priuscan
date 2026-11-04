@@ -60,30 +60,8 @@ static const int LINK_RX = 19;
 static const int LINK_TX = 20;
 static const uint32_t LINK_BAUD = 230400;
 
-#pragma pack(push,1)
-struct PayloadF {
-  uint8_t seq;
-  float   rpm;
-  float   hv_current_A;
-  float   hv_voltage_V;
-  float   ect_C;
-  float   hv_intake_C;
-  float   tb1_C;
-  float   tb2_C;
-  float   tb3_C;
-  float   soc_pct;
-  float   mg1_temp_F;
-  float   mg1_rpm;
-  float   mg2_temp_F;
-  float   mg2_rpm;
-  int8_t  ebar;
-  uint8_t est;
-  uint8_t bfs;
-  uint8_t bfor;
-  uint8_t dim;
-  uint8_t off;
-};
-#pragma pack(pop)
+// One packet definition shared by the sender and receiver.
+#include "../../shared/sensor_packet.h"
 
 // ============ Framed parser (0xAA | LEN | payload | XOR) ============
 static inline uint8_t xor_checksum(const uint8_t* p, size_t n) {
@@ -319,7 +297,7 @@ static inline void label_set_centi(lv_obj_t* lbl, int centi, const char* suffix)
 #define ENGINE_INDICATOR_COLOR  RGB(255,100,0)
 
 // LED strip logic (no .show() inside; uses led_mark_dirty())
-void updateShiftStrip(int8_t ebar_raw, float rpm) {
+void updateShiftStrip(int16_t ebar_raw, float rpm) {
   static bool     wasInWarn = false;
   static uint8_t  blinksRemaining = 0;
   static bool     blinkOn = true;
@@ -744,7 +722,7 @@ void loop() {
       
 
       // ===== Ebar & drain labels (on change) =====
-      int ebar_round = (int)lrintf(lastPacket.ebar);
+      const int ebar_round = lastPacket.ebar; // full value; LVGL saturates only the bar
       if (changed(prev_ebar, ebar_round)) {
         lv_label_set_text_fmt(objects.ebar_label, "%d", ebar_round);
         // update ebar bar

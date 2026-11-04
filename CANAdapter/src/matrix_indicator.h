@@ -4,6 +4,6 @@
 #include <Arduino.h>
 
 void initMatrixIndicator();
-void updateMatrixIndicator(float rpm, int8_t ebar, bool carDim, bool evMode, bool displayOff);
+void updateMatrixIndicator(float rpm, int16_t ebar, bool carDim, bool evMode, bool displayOff);
 
 #endif

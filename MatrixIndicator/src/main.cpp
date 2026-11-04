@@ -2,243 +2,142 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_NeoPixel.h>
 #include <Adafruit_NeoMatrix.h>
-
 #include <WiFi.h>
 #include <esp_now.h>
+#include "neon_badges.h"
 
-// bitmap file includes
-#include "bitmapsBig/EV.xbm.h"
-#include "bitmapsBig/GAS.xbm.h"
-// #include "bitmapsBig/engine.xbm.h"
-#include "bitmapsBig/M.xbm.h"
-
-
-// matrix setup ------------------------------------------------------------------------------------------------
-#define DATA_PIN    14    // LED data pin
-#define W           16      // two 8x8 panels side by side
-#define H            8
-#define BRIGHTNESS   100     // initial brightness on boot
-bool intro = true;
-
-// confirmed layout flags
-// BOT LEFT  COLS  PROG  => NEO_MATRIX_BOTTOM | NEO_MATRIX_LEFT | NEO_MATRIX_COLUMNS | NEO_MATRIX_PROGRESSIVE
+constexpr uint8_t DATA_PIN = 14;
+constexpr uint8_t BOOT_BRIGHTNESS = 100;
 Adafruit_NeoMatrix matrix(
-  W, H, DATA_PIN,
-  NEO_MATRIX_BOTTOM | NEO_MATRIX_LEFT | NEO_MATRIX_COLUMNS | NEO_MATRIX_PROGRESSIVE,
-  NEO_GRB + NEO_KHZ800
-);
+    neon::WIDTH, neon::HEIGHT, DATA_PIN,
+    NEO_MATRIX_BOTTOM | NEO_MATRIX_LEFT | NEO_MATRIX_COLUMNS | NEO_MATRIX_PROGRESSIVE,
+    NEO_GRB + NEO_KHZ800);
 
+// ESP-NOW runs in another task. Publish a coherent packet; all drawing and LED
+// transmission happens in loop(), never inside the receive callback.
+portMUX_TYPE rxMux = portMUX_INITIALIZER_UNLOCKED;
+matrix_indicator::State pendingState{};
+int16_t pendingWireEbar = 0;
+uint32_t rxRevision = 0;
 
-// display functions ---------------------------------------------------------------------------------------
-
-static inline uint32_t RGB(uint8_t r, uint8_t g, uint8_t b) {
-  return matrix.Color(r, g, b);
+void onDataRecv(const uint8_t*, const uint8_t* data, int len) {
+  matrix_indicator::WireState next{};
+  if (len < 0 || !matrix_indicator::decodePacket(data,static_cast<size_t>(len),next)) return;
+  portENTER_CRITICAL(&rxMux);
+  pendingWireEbar = next.ebar;
+  pendingState = matrix_indicator::displayState(next);
+  ++rxRevision;
+  portEXIT_CRITICAL(&rxMux);
 }
 
-uint32_t ebarColorForSpot(uint8_t spot) {
-  if (spot < W * 3 / 8) return RGB(0, 255, 0);
-  if (spot < W * 5 / 8) return RGB(180, 180, 0);
-  if (spot < W * 7 / 8) return RGB(255, 80, 0);
-  return RGB(255, 0, 0);
-}
+neon::Renderer renderer;
+neon::Frame frame;
+uint32_t startupAt = 0;
+uint32_t lastFrameAt = 0;
+uint32_t consumedRevision = 0;
+matrix_indicator::State currentState{};
+bool haveLiveState = false;
+bool idleCleared = false;
 
-void drawEbarRow(int8_t ebar_step, bool engine_on) {
-  matrix.drawLine(0, 0, W - 1, 0, 0);
-
-  if (engine_on || ebar_step == 0) {
-    return;
+void showFrame() {
+  // RGB888 passthrough retains the proposal's dim sheen and white glint without
+  // RGB565 quantization. NeoMatrix still handles the confirmed physical layout.
+  for (int y=0; y<neon::HEIGHT; ++y) for (int x=0; x<neon::WIDTH; ++x) {
+    const neon::Color c = frame.at(x,y);
+    matrix.setPassThruColor((static_cast<uint32_t>(c.r)<<16) |
+        (static_cast<uint32_t>(c.g)<<8) | c.b);
+    matrix.drawPixel(x,y,0);
   }
-
-  int lit = ebar_step;
-  if (lit < 0) {
-    lit = -lit;
-    if (lit > W) lit = W;
-    for (int k = 0; k < lit; k++) {
-      matrix.drawPixel(W - 1 - k, 0, RGB(0, 80, 255));
-    }
-    return;
-  }
-
-  if (lit > W) lit = W;
-
-  for (int k = 0; k < lit; k++) {
-    matrix.drawPixel(k, 0, ebarColorForSpot(k));
-  }
-}
-
-void renderIndicator(uint8_t flags, int8_t ebar_step) {
-  bool engine_on   = flags & (1 << 0);
-  bool ev_mode     = flags & (1 << 2);
-
-  matrix.fillScreen(0);
-  drawEbarRow(ebar_step, engine_on);
-
-  if (engine_on) {
-    matrix.drawXBitmap(0, 0, GAS_bits, GAS_width, GAS_height, RGB(255, 162, 0));
-    matrix.drawLine(0, 0, W - 1, 0, 0);
-  } else {
-    matrix.drawXBitmap(0, 0, EV_bits, EV_width, EV_height, RGB(0, 255, 0));
-    if (ev_mode) {
-      matrix.drawXBitmap(0, 0, M_bits, M_width, M_height, RGB(0, 100, 255));
-    }
-  }
+  matrix.setPassThruColor();
   matrix.show();
 }
 
-
-// data receiver setup ---------------------------------------------------------------------------------------
-#define PACKET_TIMEOUT_MS 4000
-volatile uint8_t last_flags = 0;
-volatile int8_t last_ebar_step = 0;
-volatile unsigned long last_rx = 0;
-volatile bool needs_render = false;
-
-
-void onDataRecv(const uint8_t*, const uint8_t* data, int len) {
-  if (len < 1) return;
-  last_flags = data[0];
-  last_ebar_step = (len >= 2) ? (int8_t)data[1] : 0;
-  last_rx = millis();
-  needs_render = true;
-
-  // Decode bits and print immediately on packet
-  bool engine_on          = last_flags & (1 << 0);
-  bool car_dim            = last_flags & (1 << 1);
-  bool ev_mode            = last_flags & (1 << 2);
-  bool display_off        = last_flags & (1 << 3);
-
-  Serial.printf("RX flags: eng=%d, dim=%d, evm=%d, disp_off=%d, ebar=%d\n",
-                engine_on, car_dim, ev_mode, display_off, last_ebar_step);
-
-  if (display_off == 1) {
-    matrix.setBrightness(0);
-  } else if (car_dim == 1) {
-    matrix.setBrightness(10);
-  } else {
-    matrix.setBrightness(255);
-  }
-  
-
-}
-
-
 void setup() {
-
   Serial.begin(115200);
+  pinMode(DATA_PIN,OUTPUT);
+  digitalWrite(DATA_PIN,LOW);
+  delay(20);
+  matrix.begin();
+  // Global dim/off is applied to the freshly rendered frame, avoiding repeated
+  // destructive setBrightness() rescaling and preserving colors on restoration.
+  matrix.setBrightness(255);
+  matrix.fillScreen(0);
+  matrix.show();
+
   WiFi.mode(WIFI_STA);
   Serial.print("ESP Board MAC Address: ");
   Serial.println(WiFi.macAddress());
-  esp_now_init();
-  esp_now_register_recv_cb(onDataRecv);
-
-  pinMode(DATA_PIN, OUTPUT);
-  digitalWrite(DATA_PIN, LOW);
-  delay(20);
-
-  matrix.begin();
-  matrix.setBrightness(BRIGHTNESS);
-  matrix.fillScreen(0);
-
-  // matrix.drawPixel(0, 0, matrix.Color(255,   0,   0)); // 1st   = Red
-  // matrix.drawPixel(15, 0, matrix.Color(  0, 255,   0)); // 2nd   = Green
-  // matrix.drawPixel(15, 7, matrix.Color(  0,   0, 255)); // 65th  = Blue
-  // matrix.drawPixel(0, 7, matrix.Color(255, 255,   0)); // 66th  = Yellow
-
-  // matrix.show();
-  // delay(1000);
-
-  // show fullscreen rainbow on start
-  matrix.drawLine(0, 0, W-1, 0, matrix.Color(255,   0,   0)); // red
-  matrix.drawLine(0, 1, W-1, 1, matrix.Color(255, 127,   0)); // orange
-  matrix.drawLine(0, 2, W-1, 2, matrix.Color(255, 255,   0)); // yellow
-  matrix.drawLine(0, 3, W-1, 3, matrix.Color(0,   255,   0)); // green
-  matrix.drawLine(0, 4, W-1, 4, matrix.Color(0,     0, 255)); // blue
-  matrix.drawLine(0, 5, W-1, 5, matrix.Color(75,    0, 130)); // indigo
-  matrix.drawLine(0, 6, W-1, 6, matrix.Color(148,    0, 211)); // violet
-  
-  matrix.show();
-  delay(1000);
-
-  // show more important colors on left side :3
-  matrix.drawLine(0, 0, 0, 7, matrix.Color(0,   255, 255)); // light blue
-  matrix.drawLine(1, 0, 1, 7, matrix.Color(255, 105, 180)); // pink
-  matrix.drawLine(2, 0, 2, 7, matrix.Color(255, 255, 255)); // white
-  matrix.drawLine(3, 0, 3, 7, matrix.Color(255, 105, 180)); // pink
-  matrix.drawLine(4, 0, 4, 7, matrix.Color(0,   255, 255)); // light blue
-
-  matrix.show();
-  delay(3000);
-
-  matrix.fillScreen(0);
-
-  // permanent rainbow across top row, 2 pixel wide lines
-  // matrix.drawLine(0, 0, 2, 0, matrix.Color(255,   0,   0)); // red
-  // matrix.drawLine(3, 0, 4, 0, matrix.Color(255, 127,   0)); // orange
-  // matrix.drawLine(5, 0, 6, 0, matrix.Color(255, 255,   0)); // yellow
-  // matrix.drawLine(7, 0, 8, 0, matrix.Color(0,   255,   0)); // green
-  // matrix.drawLine(9, 0, 10, 0, matrix.Color(0,     0, 255)); // blue
-  // matrix.drawLine(11, 0, 12, 0, matrix.Color(75,    0, 130)); // indigo
-  // matrix.drawLine(13, 0, 15, 0, matrix.Color(148,    0, 211)); // violet
-
-
-  matrix.show();
-  delay(2000);
-
-  intro = false;
+  if (esp_now_init() == ESP_OK) {
+    esp_now_register_recv_cb(onDataRecv);
+  } else {
+    Serial.println("ESP-NOW initialization failed");
+  }
+  startupAt = millis();
+  lastFrameAt = startupAt-neon::FRAME_MS;
 }
 
-
-
 void loop() {
-  if (!intro && needs_render) {
-    uint8_t flags = last_flags;
-    int8_t ebar_step = last_ebar_step;
-    needs_render = false;
-    renderIndicator(flags, ebar_step);
+  const uint32_t now = millis();
+  matrix_indicator::State received;
+  uint32_t revision;
+  int16_t wireEbar;
+  portENTER_CRITICAL(&rxMux);
+  received = pendingState;
+  revision = rxRevision;
+  wireEbar = pendingWireEbar;
+  portEXIT_CRITICAL(&rxMux);
+
+  // Observe the received count outside the Wi-Fi callback. Keep this paired
+  // with the sender trace until the physical half-width discrepancy is located.
+  static uint32_t lastTrace = 0;
+  if (revision != 0 && static_cast<uint32_t>(now-lastTrace) >= 500) {
+    Serial.printf("Matrix BAR RX ebar=%d engine=%u pixels=%d\n",
+        wireEbar, (received.flags & matrix_indicator::ENGINE) ? 1 : 0, received.step);
+    lastTrace = now;
   }
 
-  // show ev without m
-  // showEv();
-  // delay(3000);
+  bool urgent = false;
+  if (revision != consumedRevision) {
+    consumedRevision = revision;
+    urgent = !haveLiveState ||
+        ((received.flags ^ currentState.flags) & matrix_indicator::ENGINE) ||
+        matrix_indicator::brightness(received) != matrix_indicator::brightness(currentState);
+    renderer.update(received,now);
+    currentState = received;
+    haveLiveState = true; // Buffer live state while the startup sequence finishes.
+  }
 
-  // show ev with m
-  // showEv(true);
-  // delay(3000);
+  // Off and brightness changes bypass the 50 ms frame deadline. Repeated OFF
+  // packets do not retransmit black or run unnecessary animation frames.
+  if (haveLiveState && (currentState.flags & matrix_indicator::OFF) && !urgent) {
+    delay(1);
+    return;
+  }
+  if (!urgent && static_cast<uint32_t>(now-lastFrameAt) < neon::FRAME_MS) {
+    delay(1);
+    return;
+  }
+  lastFrameAt = now; // Skip missed deadlines; never burst through catch-up frames.
 
-  // show gas mode
-  // showGas();
-  // delay(3000);
-
-  // show engine icon
-  // showEngineIcon();
-  // delay(4000);
-
-  // bool stale = (PACKET_TIMEOUT_MS > 0) && (millis() - last_rx > PACKET_TIMEOUT_MS);
-  // uint8_t f = stale ? 0 : last_flags;
-
-
-
-
-  // static unsigned long last_print = 0;
-  //   if (millis() - last_print >= 1000) {
-  //     last_print = millis();
-  //     if (stale) {
-  //       Serial.println("No packets recently :3 flags considered 0");
-  //     } else {
-  //       // Serial.printf("Flags now: 0b" BYTE_TO_BINARY_PATTERN "\n",
-  //       //               BYTE_TO_BINARY(f)); 
-  //     }
-
-
-  //       Serial.print((f & (1 << 0)) ? "E" : "-");
-  //       Serial.print((f & (1 << 1)) ? "D" : "-");
-  //       Serial.print((f & (1 << 2)) ? "V" : "-");
-  //       Serial.println((f & (1 << 3)) ? "O" : "-");
-
-  //   }
-  
-
-
-
-
+  if (haveLiveState && (currentState.flags & matrix_indicator::OFF)) {
+    frame.clear();
+  } else if (static_cast<uint32_t>(now-startupAt) < neon::STARTUP_MS) {
+    // Incoming telemetry stays current but cannot truncate the boot animation.
+    // Dim/off still takes effect immediately during the intro.
+    neon::startup(frame,now-startupAt);
+    const uint8_t liveBrightness = haveLiveState ?
+        matrix_indicator::brightness(currentState) : 255;
+    const uint8_t brightness = liveBrightness < BOOT_BRIGHTNESS ?
+        liveBrightness : BOOT_BRIGHTNESS;
+    for (auto& p : frame.pixels) p=neon::scale(p,brightness,255);
+  } else if (haveLiveState) {
+    renderer.render(frame,now);
+  } else {
+    // Match existing no-data behavior: blank after intro until the first packet.
+    // After reception retain the latest state; no new disconnect policy is added.
+    if (idleCleared) { delay(1); return; }
+    frame.clear();
+    idleCleared = true;
+  }
+  showFrame();
 }

@@ -3,6 +3,7 @@
 #include <esp32_can.h> /* https://github.com/collin80/esp32_can */
 
 #include "can_tx.h"
+#include "energy_bar.h"
 #include "matrix_indicator.h"
 #include "steering_controls.h"
 
@@ -353,31 +354,8 @@ static inline uint8_t xor_checksum(const uint8_t* p, size_t n) {
   return x;
 }
 
-#pragma pack(push,1)
-// All primary values as IEEE-754 float (little-endian on ESP32)
-struct PayloadF {
-  uint8_t seq;          // increments each packet
-  float   rpm;          // from g_sensors[IDX_RPM]
-  float   hv_current_A; // can be negative
-  float   hv_voltage_V;
-  float   ect_C;
-  float   hv_intake_C;
-  float   tb1_C;
-  float   tb2_C;
-  float   tb3_C;
-  float   soc_pct;
-  float   mg1_temp_F;
-  float   mg1_rpm;
-  float   mg2_temp_F;
-  float   mg2_rpm;
-  int8_t  ebar;         // already small int
-  uint8_t est;          // state_energy_drain
-  uint8_t bfs;          // battery fan speed
-  uint8_t bfor;         // battery fan override
-  uint8_t dim;          // car dim signal
-  uint8_t off;          // display off flag
-};
-#pragma pack(pop)
+// One packet definition shared by the sender and receiver.
+#include "../../shared/sensor_packet.h"
 
 static uint8_t tx_seq = 0;
 
@@ -414,10 +392,10 @@ void sendSensorsFloat() {
     wr_f32(&buf[o], g_sensors[IDX_MG2_TEMP_F]);  o += 4;
     wr_f32(&buf[o], g_sensors[IDX_MG2_RPM]);     o += 4;
 
-    buf[o++] = (int8_t)g_sensors[9];             // ebar
+    writeSensorInt16LE(&buf[o], (int16_t)g_sensors[9]); o += 2; // full decoded ebar
     buf[o++] = (uint8_t)g_sensors[10];           // est
 
-    // NEW: fan speed + override flag (bytes 39, 40)
+    // Fan speed and override follow the widened ebar and state fields.
     buf[o++] = (uint8_t)g_sensors[IDX_BFS];      // fan speed 0..6
     buf[o++] = fanOverrideEnable ? 1 : 0;     // 0/1  (make sure this is a bool var)
 
@@ -538,24 +516,15 @@ void loop() {
 
             // energy bar (non-polled)
             case 0x247: { // BO_ 583 Display_1
+                if (can_message.length < 3) break;
                 const uint8_t* d = can_message.data.byte;
+                const EnergyBarReading bar = decodeEnergyBar(d, can_message.length);
 
-                // SG_ BAR_ENERGY : 15|8@0-   -> signed 8-bit at byte 1
-                int8_t bar_energy = (int8_t)d[1];
-
-                // SG_ STATE_ENERGYDRAIN : 3|4@0+ -> bits 3..0 of byte 0
-                uint8_t state_energy_drain = d[0] & 0x0F;
-
-                // TODO: store them wherever you like
-                // e.g., g_sensors[8] = bar_energy;
-                //       g_sensors[9] = state_energy_drain;
-
-                g_sensors[9] = bar_energy;
-                g_sensors[10] = state_energy_drain;
-
-                // (optional) quick print
-                // Serial.print("BAR_ENERGY="); Serial.print(bar_energy);
-                // Serial.print("  STATE_ENERGYDRAIN="); Serial.println(state_energy_drain);
+                // Decode once at the source. UART and matrix consumers receive
+                // the full signed value; only their visual bars may saturate.
+                g_sensors[9] = bar.value;
+                // Preserve existing state telemetry; low two bits also extend ebar.
+                g_sensors[10] = d[0] & 0x0F;
                 break;
             }
 
@@ -1003,7 +972,7 @@ void loop() {
     // STEP 5: ESP-NOW matrix indicator
     updateMatrixIndicator(
         g_sensors[IDX_RPM],
-        (int8_t)g_sensors[9],
+        (int16_t)g_sensors[9],
         (uint8_t)g_sensors[IDX_CAR_DIM] != 0,
         (uint8_t)g_sensors[IDX_MODE_EV] != 0,
         (uint8_t)g_sensors[IDX_DISPLAY_OFF] != 0
