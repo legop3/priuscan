@@ -78,13 +78,11 @@ inline void drawBody(Frame& f, State s, uint32_t phase) {
   }
 }
 
-inline void drawMeter(Frame& f, State s, uint32_t phase, const uint16_t* trail) {
+inline void drawMeter(Frame& f, State s) {
   const bool reverse = matrix_indicator::regen(s);
   const bool power = (s.flags & matrix_indicator::POWER) && !reverse;
   const bool gas = (s.flags & matrix_indicator::ENGINE) != 0;
   const int count = absolute(s.step) > 16 ? 16 : absolute(s.step);
-  // PWR keeps a fast sweep; ordinary driving shows only the moving edge trail.
-  const int head=static_cast<int>(phase*(count+4)*1000/12000)-1000;
   for (int i=0; i<WIDTH; ++i) {
     const int x = reverse ? 15-i : i;
     // Deliberately separate meter hues from green EV / amber GAS / blue M.
@@ -93,19 +91,7 @@ inline void drawMeter(Frame& f, State s, uint32_t phase, const uint16_t* trail) 
         x<6 ? Color{0,255,255} : x<10 ? Color{120,0,255} :
         x<14 ? Color{220,0,255} : Color{255,0,120};
     if (i<count) f.at(x,0)=c;
-    if (!power) {
-      if (trail[i]) f.at(x,1)=scale(c,trail[i]*3/4);
-      continue;
-    }
-    if (i>=count) continue;
-    const int behind=head-i*1000;
-    unsigned glow=0;
-    // A soft bright head, followed by a shorter, dimmer saturated tail.
-    if (behind>=-700 && behind<500)
-      glow=950*(700-absolute(behind))/700;
-    else if (behind>=500 && behind<2700)
-      glow=350*(2700-behind)/2200;
-    if (glow) f.at(x,1)=scale(c,glow);
+
   }
 }
 
@@ -131,12 +117,6 @@ class Renderer {
  public:
   void update(State next, uint32_t now) {
     if (initialized_) advance(now);
-    if (!initialized_ ||
-        ((next.flags ^ state_.flags) & (matrix_indicator::ENGINE | matrix_indicator::OFF)) ||
-        matrix_indicator::regen(next) != matrix_indicator::regen(state_)) {
-      for (auto& strength : trail_) strength=0;
-      edge_=absolute(next.step)*1000-500;
-    }
     lastTick_=now;
     if (initialized_ && identity(next) != identity(state_)) {
       // Snapshot the currently visible body, including an interrupted dissolve.
@@ -154,7 +134,8 @@ class Renderer {
       transitioning_ = false;
     advance(now);
     body(f,now);
-    drawMeter(f,state_,ribbonPhase_,trail_); // Solid meter and brightness never dissolve.
+    drawMeter(f,state_); // The top bar remains immediate and unchanged.
+    echo(f,now);
     const uint8_t brightness = matrix_indicator::brightness(state_);
     if (brightness != 255) for (auto& p : f.pixels) p=scale(p,brightness,255);
   }
@@ -170,23 +151,44 @@ class Renderer {
       const unsigned rate=(state_.flags & matrix_indicator::POWER) ? 36 :
           2+absolute(state_.step);
       phase_=(phase_+dt*rate)%9000;
-      const unsigned flowRate=(state_.flags & matrix_indicator::POWER) ? 40 :
-          7+absolute(state_.step)/2;
-      ribbonPhase_=(ribbonPhase_+dt*flowRate)%12000;
-      // A 1.2 second fade leaves a longer visible wake without a solid row.
-      for (auto& strength : trail_)
-        strength=strength>dt ? strength-dt : 0;
-      const int delta=absolute(state_.step)*1000-500-edge_;
-      if (delta && !(state_.flags & matrix_indicator::OFF)) {
-        const int travel=static_cast<int>(dt)*30;
-        edge_+=delta>0 ? (delta<travel ? delta : travel) :
-            (-delta<travel ? delta : -travel);
-        for (int i=0; i<WIDTH; ++i) {
-          const int distance=absolute(i*1000-edge_);
-          const unsigned glow=distance<1100 ? 1200*(1100-distance)/1100 : 0;
-          if (glow>trail_[i]) trail_[i]=glow;
-        }
+
+    }
+  }
+  static bool equal(Color a, Color b) {
+    return a.r==b.r && a.g==b.g && a.b==b.b;
+  }
+  void echo(Frame& f, uint32_t now) {
+    // Replay every visible top-row change two seconds later. A falling pixel
+    // echoes its departing color, rather than trying to emit a black pulse.
+    while (eventCount_ && static_cast<uint32_t>(now-events_[eventHead_].at)>=2000) {
+      const EchoEvent& event=events_[eventHead_];
+      for (int x=0; x<WIDTH; ++x) if (!equal(event.row[x],delayed_[x])) {
+        const Color next=event.row[x];
+        echoColor_[x]=(next.r || next.g || next.b) ? next : delayed_[x];
+        echoAt_[x]=event.at+2000;
+        echoActive_[x]=true;
+        delayed_[x]=next;
       }
+      eventHead_=(eventHead_+1)%ECHO_CAPACITY;
+      --eventCount_;
+    }
+    bool changed=false;
+    for (int x=0; x<WIDTH; ++x) if (!equal(f.at(x,0),recorded_[x])) changed=true;
+    if (changed) {
+      if (eventCount_==ECHO_CAPACITY) {
+        eventHead_=(eventHead_+1)%ECHO_CAPACITY;
+        --eventCount_;
+      }
+      EchoEvent& event=events_[(eventHead_+eventCount_)%ECHO_CAPACITY];
+      event.at=now;
+      for (int x=0; x<WIDTH; ++x) event.row[x]=recorded_[x]=f.at(x,0);
+      ++eventCount_;
+    }
+    for (int x=0; x<WIDTH; ++x) if (echoActive_[x]) {
+      const uint32_t age=now-echoAt_[x];
+      if (age>=2000) { echoActive_[x]=false; continue; }
+      const unsigned strength=age<400 ? age*350/400 : (2000-age)*350/1600;
+      f.at(x,1)=scale(echoColor_[x],strength);
     }
   }
   void body(Frame& f, uint32_t now) const {
@@ -197,9 +199,14 @@ class Renderer {
         f.pixels[i]=mix(from_.pixels[i],f.pixels[i],elapsed,TRANSITION_MS);
     }
   }
-  uint16_t trail_[WIDTH]{};
-  int edge_=-500;
-  uint32_t ribbonPhase_=0;
+  // Save actual RGB changes, so old EV/GAS/regen colors survive transitions.
+  struct EchoEvent { uint32_t at; Color row[WIDTH]; };
+  static constexpr unsigned ECHO_CAPACITY=64;
+  EchoEvent events_[ECHO_CAPACITY]{};
+  unsigned eventHead_=0, eventCount_=0;
+  Color recorded_[WIDTH]{}, delayed_[WIDTH]{}, echoColor_[WIDTH]{};
+  uint32_t echoAt_[WIDTH]{};
+  bool echoActive_[WIDTH]{};
   uint32_t lastTick_=0;
   uint32_t phase_=0;
   State state_{};
