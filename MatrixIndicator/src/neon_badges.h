@@ -86,10 +86,12 @@ inline void drawMeter(Frame& f, State s) {
   for (int i=0; i<WIDTH; ++i) {
     const int x = reverse ? 15-i : i;
     // Deliberately separate meter hues from green EV / amber GAS / blue M.
+    // Interpolate every column instead of assigning blocks of the same color.
     const Color c = reverse ? Color{0,255,255} : power ? Color{255,0,0} :
-        gas ? (x<6 ? Color{255,64,0} : x<12 ? Color{255,32,0} : Color{255,0,0}) :
-        x<6 ? Color{0,255,255} : x<10 ? Color{120,0,255} :
-        x<14 ? Color{220,0,255} : Color{255,0,120};
+        gas ? mix(Color{255,64,0},Color{255,0,0},x,WIDTH-1) :
+        x<=5 ? mix(Color{0,255,255},Color{120,0,255},x,5) :
+        x<=10 ? mix(Color{120,0,255},Color{220,0,255},x-5,5) :
+        mix(Color{220,0,255},Color{255,0,120},x-10,5);
     if (i<count) f.at(x,0)=c;
 
   }
@@ -158,17 +160,10 @@ class Renderer {
     return a.r==b.r && a.g==b.g && a.b==b.b;
   }
   void echo(Frame& f, uint32_t now) {
-    // Replay every visible top-row change two seconds later. A falling pixel
-    // echoes its departing color, rather than trying to emit a black pulse.
-    while (eventCount_ && static_cast<uint32_t>(now-events_[eventHead_].at)>=2000) {
+    // Replay the actual top-row RGB values after a fixed delay.
+    while (eventCount_ && static_cast<uint32_t>(now-events_[eventHead_].at)>=ECHO_DELAY_MS) {
       const EchoEvent& event=events_[eventHead_];
-      for (int x=0; x<WIDTH; ++x) if (!equal(event.row[x],delayed_[x])) {
-        const Color next=event.row[x];
-        echoColor_[x]=(next.r || next.g || next.b) ? next : delayed_[x];
-        echoAt_[x]=event.at+2000;
-        echoActive_[x]=true;
-        delayed_[x]=next;
-      }
+      for (int x=0; x<WIDTH; ++x) delayed_[x]=event.row[x];
       eventHead_=(eventHead_+1)%ECHO_CAPACITY;
       --eventCount_;
     }
@@ -184,12 +179,7 @@ class Renderer {
       for (int x=0; x<WIDTH; ++x) event.row[x]=recorded_[x]=f.at(x,0);
       ++eventCount_;
     }
-    for (int x=0; x<WIDTH; ++x) if (echoActive_[x]) {
-      const uint32_t age=now-echoAt_[x];
-      if (age>=2000) { echoActive_[x]=false; continue; }
-      const unsigned strength=age<400 ? age*350/400 : (2000-age)*350/1600;
-      f.at(x,1)=scale(echoColor_[x],strength);
-    }
+    for (int x=0; x<WIDTH; ++x) f.at(x,1)=scale(delayed_[x],350);
   }
   void body(Frame& f, uint32_t now) const {
     drawBody(f,state_,phase_);
@@ -201,12 +191,11 @@ class Renderer {
   }
   // Save actual RGB changes, so old EV/GAS/regen colors survive transitions.
   struct EchoEvent { uint32_t at; Color row[WIDTH]; };
+  static constexpr uint32_t ECHO_DELAY_MS=500;
   static constexpr unsigned ECHO_CAPACITY=64;
   EchoEvent events_[ECHO_CAPACITY]{};
   unsigned eventHead_=0, eventCount_=0;
-  Color recorded_[WIDTH]{}, delayed_[WIDTH]{}, echoColor_[WIDTH]{};
-  uint32_t echoAt_[WIDTH]{};
-  bool echoActive_[WIDTH]{};
+  Color recorded_[WIDTH]{}, delayed_[WIDTH]{};
   uint32_t lastTick_=0;
   uint32_t phase_=0;
   State state_{};

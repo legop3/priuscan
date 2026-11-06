@@ -546,15 +546,16 @@ void loop() {
   lv_timer_handler();
   pollUart();
 
-  // UI update cadence (every ~50 ms)
+  // Match the sender's 30 ms cadence instead of limiting live values to 20 Hz.
   static unsigned long lastUi = 0;
   unsigned long now = millis();
-  if (now - lastUi >= 50) {
+  if (now - lastUi >= 30) {
     lastUi = now;
 
     bool fresh = (now - lastRxMs) < DATA_STALE_MS;
     if (fresh) {
-      lv_obj_add_flag(objects.no_data_label, LV_OBJ_FLAG_HIDDEN);
+      if (!lv_obj_has_flag(objects.no_data_label, LV_OBJ_FLAG_HIDDEN))
+        lv_obj_add_flag(objects.no_data_label, LV_OBJ_FLAG_HIDDEN);
 
       // ===== RPM =====
       int rpm_val = (int)lrintf(lastPacket.rpm);
@@ -736,7 +737,8 @@ void loop() {
 
     } else {
       // stale: optional handling (no-op)
-      lv_obj_clear_flag(objects.no_data_label, LV_OBJ_FLAG_HIDDEN);
+      if (lv_obj_has_flag(objects.no_data_label, LV_OBJ_FLAG_HIDDEN))
+        lv_obj_clear_flag(objects.no_data_label, LV_OBJ_FLAG_HIDDEN);
     }
   }
 }

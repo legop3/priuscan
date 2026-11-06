@@ -27,14 +27,6 @@ void initMatrixIndicator() {
 void updateMatrixIndicator(float rpm, int16_t ebar, bool carDim, bool evMode, bool displayOff) {
   const matrix_indicator::WireState state = matrix_indicator::makeWireState(rpm,ebar,carDim,evMode,displayOff);
   const unsigned long now = millis();
-  // Temporary trace for the reported EV=50 / half-width discrepancy. This
-  // observes the actual values passed by the CAN loop; it does not alter them.
-  static unsigned long lastTrace = 0;
-  if (now-lastTrace >= 500) {
-    Serial.printf("Matrix BAR TX ebar=%d engine=%u matrix_ebar=%d\n", ebar,
-        (state.flags & matrix_indicator::ENGINE) ? 1 : 0, state.ebar);
-    lastTrace = now;
-  }
   if (state.flags != lastFlags || state.ebar != lastEbarValue || now-lastSend >= SEND_INTERVAL_MS) {
     uint8_t packet[matrix_indicator::PACKET_SIZE];
     matrix_indicator::encodePacket(state,packet);
