@@ -12,6 +12,8 @@
 #include <Adafruit_NeoPixel.h>
 #include <math.h>
 #include <limits.h>
+#include "settings_menu.h"
+#include "../../shared/dash_menu_protocol.h"
 
 #define SHIFT_LED_PIN   38
 #define SHIFT_LED_COUNT 8
@@ -71,6 +73,8 @@ static inline uint8_t xor_checksum(const uint8_t* p, size_t n) {
 enum class RxState : uint8_t { WAIT_START, WAIT_LEN, WAIT_PAYLOAD, WAIT_CSUM };
 static RxState  rxState = RxState::WAIT_START;
 static uint8_t  rxLen   = 0;
+static uint8_t  rxMarker = 0;
+static uint32_t rxByteAt = 0;
 static uint8_t  rxBuf[128];
 static uint8_t  rxIdx   = 0;
 
@@ -90,13 +94,18 @@ static void pollUart() {
   while (LINK.available() && bytesRead < UART_BYTES_PER_LOOP) {
     bytesRead++;
     uint8_t b = (uint8_t)LINK.read();
+    const uint32_t receivedAt=millis();
+    if (receivedAt-rxByteAt>100) rxState=RxState::WAIT_START;
+    rxByteAt=receivedAt;
     switch (rxState) {
       case RxState::WAIT_START:
-        if (b == START_BYTE) rxState = RxState::WAIT_LEN;
+        if (b == START_BYTE || b == dash_menu_wire::MARKER) {
+          rxMarker=b; rxState=RxState::WAIT_LEN;
+        }
         break;
       case RxState::WAIT_LEN:
         rxLen = b;
-        if (rxLen == 0 || rxLen > sizeof(rxBuf)) { rxState = RxState::WAIT_START; }
+        if (rxLen != (rxMarker==START_BYTE ? EXPECTED_LEN : dash_menu_wire::PAYLOAD_SIZE)) { rxState = RxState::WAIT_START; }
         else { rxIdx = 0; rxState = RxState::WAIT_PAYLOAD; }
         break;
       case RxState::WAIT_PAYLOAD:
@@ -105,11 +114,15 @@ static void pollUart() {
         break;
       case RxState::WAIT_CSUM: {
         uint8_t calc = xor_checksum(rxBuf, rxLen);
-        if (calc == b && rxLen == EXPECTED_LEN) {
+        if (calc == b && rxMarker==START_BYTE && rxLen == EXPECTED_LEN) {
           memcpy(&lastPacket, rxBuf, EXPECTED_LEN);
           havePacket = true;
           lastSeq = lastPacket.seq;
-          lastRxMs = millis();
+          lastRxMs = receivedAt;
+        } else if (calc==b && rxMarker==dash_menu_wire::MARKER &&
+                   rxLen==dash_menu_wire::PAYLOAD_SIZE) {
+          const int delta=rxBuf[1]<128 ? rxBuf[1] : static_cast<int>(rxBuf[1])-256;
+          dash_menu::receive(rxBuf[0],static_cast<int8_t>(delta),receivedAt);
         }
         rxState = RxState::WAIT_START;
         break;
@@ -296,8 +309,20 @@ static inline void label_set_centi(lv_obj_t* lbl, int centi, const char* suffix)
 #define BLINK_PERIOD_OVER_MS  90
 #define ENGINE_INDICATOR_COLOR  RGB(255,100,0)
 
+static uint32_t shiftColor(int i) {
+  return i<SHIFT_LED_COUNT*3/8 ? RGB(0,255,0) :
+      i<SHIFT_LED_COUNT*5/8 ? RGB(180,180,0) :
+      i<SHIFT_LED_COUNT*7/8 ? RGB(255,80,0) : RGB(255,0,0);
+}
+
 // LED strip logic (no .show() inside; uses led_mark_dirty())
 void updateShiftStrip(int16_t ebar_raw, float rpm) {
+  if (dash_menu::stripPreview()) {
+    // Show the normal palette at full length even with zero vehicle demand.
+    for (int i=0;i<SHIFT_LED_COUNT;++i) shiftStrip.setPixelColor(i,shiftColor(i));
+    led_mark_dirty();
+    return;
+  }
   static bool     wasInWarn = false;
   static uint8_t  blinksRemaining = 0;
   static bool     blinkOn = true;
@@ -365,12 +390,7 @@ void updateShiftStrip(int16_t ebar_raw, float rpm) {
   int lit = (ebar_pos * N) / EBAR_WARN_ON; if (lit < 0) lit = 0; if (lit > N) lit = N;
   for (int i=0;i<N;i++) {
     if (i < lit) {
-      uint32_t c =
-        (i < N*3/8) ? RGB(0,255,0) :
-        (i < N*5/8) ? RGB(180,180,0) :
-        (i < N*7/8) ? RGB(255,80,0) :
-                      RGB(255,0,0);
-      shiftStrip.setPixelColor(i, c);
+      shiftStrip.setPixelColor(i, shiftColor(i));
     } else {
       shiftStrip.setPixelColor(i, 0);
     }
@@ -388,6 +408,7 @@ void setShiftStripBrightness(uint8_t pct) {
   ui_brightness_pct = pct;
   uint8_t neo = map(pct, 0, 100, 0, 255);
   shiftStrip.setBrightness(neo); // applies on next show()
+  led_mark_dirty();
 }
 
 #define BL_PIN        2
@@ -452,6 +473,7 @@ void setup() {
   timerAlarmEnable(lv_tick_timer);
 
   ui_init();
+  dash_menu::begin(setBacklightPct,setShiftStripBrightness);
 
   shiftStrip.begin();
   shiftStrip.setBrightness(255);
@@ -504,14 +526,14 @@ static uint8_t  prev_bfor = 255;
 static int      prev_batt_v_centi = INT_MIN;
 static int      prev_batt_a_centi = INT_MIN;
 
-static uint8_t  prev_dim = 255;
+
 
 static int      prev_ebar = INT_MIN;
 static int      prev_est  = INT_MIN;
 
 static int      prev_ectF = INT_MIN;
 
-static uint8_t      prev_off = INT_MIN;
+
 
 static const int KW_BAR_MAX_W = 20000;
 static const int MG_BAR_MAX_RPM = 10000;
@@ -543,6 +565,7 @@ static void update_signed_range_bar(lv_obj_t* bar, int value, int max_abs_value,
 
 void loop() {
   pollUart();
+  dash_menu::tick(millis(),lastPacket.dim!=0,lastPacket.off!=0);
   lv_timer_handler();
   pollUart();
 
@@ -681,47 +704,6 @@ void loop() {
 
       // ===== Shift LED strip =====
       updateShiftStrip(lastPacket.ebar, (float)rpm_val);
-      led_maybe_show();  // single WS2812 transfer per frame
-
-      // ===== Dimming and screen off on change =====
-      uint8_t dim_now = lastPacket.dim ? 1 : 0;
-      uint8_t off_now = lastPacket.off ? 1 : 0;
-
-      int backlight_use = 0;
-      int led_use = 0;
-      
-      if (changed(prev_off, off_now) || changed(prev_dim, dim_now)) {
-        if (off_now) {
-          backlight_use = 0;
-          led_use = 0;
-        } else if (dim_now) {
-          backlight_use = 30;
-          led_use = 5;
-        } else {
-          backlight_use = 100;
-          led_use = 50;
-        }
-        setBacklightPct(backlight_use);
-        setShiftStripBrightness(led_use);
-      }
-
-      // if (changed(prev_off, off_now)) {
-      //   if (off_now) {
-      //     setBacklightPct(0);
-      //   } else {
-      //     // restore brightness based on dim state
-      //     if (dim_now) { setBacklightPct(30); setShiftStripBrightness(5); }
-      //     else          { setBacklightPct(100); setShiftStripBrightness(50); }
-      //   }
-      // }
-      // if (changed(prev_dim, dim_now)) {
-      //   if (dim_now) { setBacklightPct(30); setShiftStripBrightness(5); }
-      //   else          { setBacklightPct(100); setShiftStripBrightness(50); }
-      // }
-
-
-      
-
       // ===== Ebar & drain labels (on change) =====
       const int ebar_round = lastPacket.ebar; // full value; LVGL saturates only the bar
       if (changed(prev_ebar, ebar_round)) {
@@ -741,4 +723,13 @@ void loop() {
         lv_obj_clear_flag(objects.no_data_label, LV_OBJ_FLAG_HIDDEN);
     }
   }
+  static bool wasPreview=false;
+  const bool preview=dash_menu::stripPreview();
+  if (preview!=wasPreview || (preview && g_led_dirty)) {
+    updateShiftStrip(lastPacket.ebar,static_cast<float>(lastPacket.rpm));
+    wasPreview=preview;
+  }
+  led_maybe_show(); // Repaint previews after brightness rescaling, including 0%.
+
+
 }

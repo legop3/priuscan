@@ -1,4 +1,5 @@
 #include "steering_controls.h"
+#include "steering_menu.h"
 
 #include "can_tx.h"
 
@@ -185,13 +186,14 @@ void handleSteeringButton(uint8_t code, unsigned long now) {
         backHoldActive = false;
         sendWirelessBuzzerCommand(false);
     }
+    // Always release prior car-control gestures before changing ownership.
+    if (prev == STEER_UP || prev == STEER_DOWN) releaseWindowGesture(now);
+    if (handleSteeringMenu(code,now)) return;
     if (code == STEER_BACK) {
         backHoldActive = true;
         backHoldStartMs = now;
     }
 
-    // A direct direction change also ends the previous gesture.
-    if (prev == STEER_UP || prev == STEER_DOWN) releaseWindowGesture(now);
     if (code == STEER_UP || code == STEER_DOWN) {
         windowGestures.push_back({code == STEER_UP ? WINDOW_CMD_UP : WINDOW_CMD_DOWN,
                                   now, 0, false});
@@ -199,6 +201,7 @@ void handleSteeringButton(uint8_t code, unsigned long now) {
 }
 
 void processSteeringControlState(unsigned long now) {
+    processSteeringMenu(now, !isWindowMotionBusy());
     processWirelessHorn(now);
     processWindowControl(now);
 }

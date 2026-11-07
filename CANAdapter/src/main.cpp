@@ -6,6 +6,8 @@
 #include "energy_bar.h"
 #include "matrix_indicator.h"
 #include "steering_controls.h"
+#include "steering_menu.h"
+#include "../../shared/dash_menu_protocol.h"
 
 // ploo woo goo woo
 
@@ -361,6 +363,14 @@ static uint8_t tx_seq = 0;
 
 void initDisplayUart() {
   DISP.begin(UART_BAUD, SERIAL_8N1, UART2_RX_PIN, UART2_TX_PIN);
+}
+
+bool sendDashMenu(uint8_t state, int8_t adjustment) {
+    const uint8_t delta=static_cast<uint8_t>(adjustment);
+    const uint8_t frame[]={dash_menu_wire::MARKER,dash_menu_wire::PAYLOAD_SIZE,
+        state,delta,static_cast<uint8_t>(state^delta)};
+    if (DISP.availableForWrite()<static_cast<int>(sizeof(frame))) return false;
+    return DISP.write(frame,sizeof(frame))==sizeof(frame);
 }
 
 static inline void wr_f32(uint8_t *dst, float v) { memcpy(dst, &v, 4); }
